@@ -1,10 +1,9 @@
 // KING compressed-picture transfer to the HuC6271 (Rainbow), registers
 // 40-44, and the raster monitor (reg 44, RINT in reg 40) for king_irq.
 //
-// When the raster becomes reg 42 with REN set and no transfer running, a
-// transfer of reg 43 blocks of 16 lines starts from reg 41 (bank A/B,
-// A16:0; the address steps inside the bank). Regs 41-43 written during a
-// transfer count from the next one. Clearing REN stops it at once.
+// A reg 42 raster match is held until the current transfer ends. The next
+// transfer loads reg 41 (bank A/B, A16:0) and reg 43 blocks of 16 lines.
+// The address steps inside the bank. Clearing REN stops it at once.
 //
 // While -REQR is low KING reads ahead up to three words into a buffer and
 // sends one word a dot, low byte first: strobes in ph 0-1 and 4-5. With the
@@ -64,8 +63,12 @@ wire take   = dck && gnt;
 // The transfer ends with the 16th line of its last block; a start on the
 // same raster is allowed.
 wire ends = st.act && hs_ev && st.lcnt == 4'd15 && st.bcnt == 5'd1;
-wire go   = (hs_ev || vs_ev) && (!st.act || ends) && st.ctl[0]
-         && raster == st.start && st.blocks != 5'd0;
+wire start_hit = (hs_ev || vs_ev) && raster == st.start;
+wire cancel_start = wr_reg && !acc.hi
+	&& (acc.r == 7'h42 || (acc.r == 7'h40 && !acc.d[0])
+	 || (acc.r == 7'h43 && acc.d[4:0] == 5'd0));
+wire go = (!st.act || ends) && st.ctl[0] && st.blocks != 5'd0
+	&& (start_hit || st.start_pending) && !cancel_start;
 
 wire send = st.act && !reqr_n && st.n != 2'd0 && !kr_busy;
 
@@ -106,6 +109,12 @@ always_ff @(posedge clk) begin
 			st.ab   <= st.sa[17];
 			st.a    <= st.sa[16:0];
 		end
+
+		// Keep an early match until the current transfer finishes.
+		if (go || cancel_start)
+			st.start_pending <= 1'b0;
+		else if (start_hit && st.ctl[0] && st.blocks != 5'd0)
+			st.start_pending <= 1'b1;
 
 		if (dck) begin
 			st.fly <= take;

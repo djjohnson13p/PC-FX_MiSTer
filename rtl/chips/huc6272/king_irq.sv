@@ -3,7 +3,7 @@
 //
 //   SCSIBK  read reg 07          SCDMA   read or write reg 0B (low half)
 //   SBCODE  read reg 08, or the status upper half
-//   LUSTER  read the status with RINT (reg 40 D1) already 0
+//   LUSTER  read the status low half
 //   SOUND   read reg 53
 //
 // LUSTER is the raster monitor: the raster count reaching reg 44, checked
@@ -63,7 +63,7 @@ always_ff @(posedge clk) begin
 		else if ((rd_reg && acc.r == 7'h08 && !acc.hi) || (rd_stat && acc.hi))
 		                                           st.sbcode <= 1'b0;
 		if (luster)                                st.luster <= 1'b1;
-		else if (rd_stat && !acc.hi && !rint)      st.luster <= 1'b0;
+		else if (rd_stat && !acc.hi)                st.luster <= 1'b0;
 		if (set_sound)                             st.sound <= 1'b1;
 		else if (rd_reg && acc.r == 7'h53)         st.sound <= 1'b0;
 	end

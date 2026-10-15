@@ -86,7 +86,8 @@ logic  [3:0] wcnt_q;
 logic        owner_q;
 logic [15:0] rd_q;
 
-wire [15:0] wd = hi ? d_i[31:16] : d_i[15:0];
+wire [15:0] wd = d_i[15:0];
+wire unused_d_hi = ^d_i[31:16];
 
 wire t1_end  = ce_sck && !bcyst_n;
 wire io_kind = kind_q == K_IOR || kind_q == K_IOW;
@@ -200,9 +201,9 @@ assign kind = kind_q;
 assign ready_n = !ready_q;
 assign szrq_n  = !(cyc_q && kind_q != K_RAM);
 
-// 16-bit devices answer on both halves; the CPU takes the one it asked for.
+// 16-bit devices use D15:0 for either half of a sized word.
 wire [15:0] rd16 = local_k ? ld_i : rd_q;
-assign d_o  = {rd16, rd16};
+assign d_o  = {16'hFFFF, rd16};
 assign d_oe = cyc_q && rw && (local_k || kind_q == K_IOR || kind_q == K_GLUE);
 
 assign ld_o  = wd;

@@ -2,8 +2,9 @@
 
 // Registered NEC V810 external-bus transaction engine.
 //
-// SIZ16B selects fixed 16-bit mode. In 32-bit mode, active-low SZRQ requests a
-// second 16-bit beat. The registered transaction drives stable pins until READY.
+// SIZ16B selects fixed 16-bit mode. Active-low SZRQ selects a device on
+// D15:0; word accesses take two beats. Upper-half narrow writes also drive
+// the low lanes. The registered transaction drives stable pins until READY.
 // IO_MRQ = 1 drops MRQ for IN/OUT cycles; 0 keeps MRQ as request-valid.
 // T2_PINS = 1 puts a full T1 and T2 on the pins: the launch cycle shows the
 // address and BCYST as T1, the registered cycle is T2, and a cycle launched
@@ -24,6 +25,12 @@ module necv810_bus_engine #(
 	input  wire        launch_write_i,
 	input  wire        launch_posted_i,
 	input  wire        launch_io_i,
+	// 01 machine fault, 11 HALT, 00 ordinary.
+	input  wire [1:0]  launch_sys_i,
+	// Recreate the final idle beat without starting a bus cycle.
+	input  wire        restore_idle_i,
+	input  wire        restore_phase_i,
+	input  wire        release_halt_i,
 	input  wire        launch_addr_error_i,
 	input  wire [1:0]  launch_size_i,
 	input  wire [31:0] launch_wdata_i,
@@ -82,6 +89,7 @@ module necv810_bus_engine #(
 	reg        write_q;
 	reg        posted_q;
 	reg        io_q;
+	reg [1:0]  sys_q;
 	reg        addr_error_q;
 	reg [1:0]  size_q;
 	reg        phase_q;
@@ -122,7 +130,7 @@ module necv810_bus_engine #(
 	wire       direct_ready_w = !active_q || (complete_w && !pending_q);
 	wire       posted_ready_w = direct_ready_w ||
 		(active_q && posted_q && (!pending_q || complete_w));
-	wire       launch_ready_w = (launch_posted_i && launch_write_i) ?
+	wire       launch_ready_w = (launch_posted_i && launch_write_i && (launch_sys_i == 2'b00)) ?
 		posted_ready_w : direct_ready_w;
 	wire       launch_accept_w = clk_en_i && launch_i && launch_ready_w;
 	wire       direct_accept_w = launch_accept_w && direct_ready_w;
@@ -133,8 +141,9 @@ module necv810_bus_engine #(
 	assign beat_accept_o = accepted_w;
 	assign first_beat_o = accepted_w && split_word_first_w;
 	assign complete_o = complete_w;
+	wire       low_lanes_w = fixed_16_i || !szrq_w;
 	assign read_data_o = read_data_fn(
-		din_i, first_half_q, fixed_16_i, split_dynamic_q,
+		din_i, first_half_q, low_lanes_w,
 		size_q, phase_q, addr_q[1:0]);
 
 	assign active_o = active_q;
@@ -155,20 +164,31 @@ module necv810_bus_engine #(
 	wire [31:1] pin_a_w;
 	wire [3:0]  pin_be_w;
 	wire        pin_rw_w;
-	assign a_o = T2_PINS ? pin_a_w : (active_q ? cycle_a_w : idle_addr_i);
+	assign a_o = T2_PINS ? pin_a_w : ((active_q || (sys_q != 2'b00)) ? cycle_a_w : idle_addr_i);
+	reg        write_phase_q;
+	// Move the upper word half onto D15:0 at falling T1S.
+	always @(posedge clk_i or posedge reset_i) begin
+		if (reset_i)
+			write_phase_q <= 1'b0;
+		else if (clk_en_i && restore_idle_i)
+			write_phase_q <= restore_phase_i;
+		else if (phi1_i && active_q && t1_q && write_q)
+			write_phase_q <= phase_q;
+	end
+	wire       write_phase_w = (T2_PINS && split_dynamic_q) ? write_phase_q : phase_q;
 	assign dout_o = write_data_fn(
-		wdata_q, fixed_16_i, split_dynamic_q, size_q, phase_q, addr_q[1:0]);
-	assign dout_oe_o = active_q && write_q;
-	wire [3:0]  cycle_be_w = active_q ?
+		wdata_q, fixed_16_i, split_dynamic_q, size_q, write_phase_w, addr_q[1:0]);
+	assign dout_oe_o = (active_q || (sys_q != 2'b00)) && write_q;
+	wire [3:0]  cycle_be_w = (active_q || (sys_q != 2'b00)) ?
 		byte_enable_fn(fixed_16_i, split_dynamic_q, size_q, phase_q, addr_q[1:0]) :
 		4'b0000;
 	assign be_o = T2_PINS ? pin_be_w : cycle_be_w;
-	// The data sheet omits ST encodings, so use the conventional NVC mapping.
-	assign st_o = !active_q ? 2'b00 : fetch_q ?
+	// Special acknowledgements retain their status through idle.
+	assign st_o = (sys_q != 2'b00) ? sys_q : !active_q ? 2'b00 : fetch_q ?
 		(fetch_branch_q ? 2'b01 : 2'b11) : 2'b10;
 	// With T2_PINS, DA is the T2 strobe of every cycle, as in the data sheet.
 	assign da_o = T2_PINS ? (active_q && !t1_q) : (active_q && !fetch_q);
-	assign mrq_o = active_q && !(IO_MRQ && io_q);
+	assign mrq_o = active_q && (sys_q == 2'b00) && !(IO_MRQ && io_q);
 	assign rw_o = T2_PINS ? pin_rw_w : !write_q;
 	assign bcyst_o = T2_PINS ? (active_q && t1_q) : (active_q && cycle_start_q);
 	// Hold active-low ADRSERR with its transaction through stalls.
@@ -188,7 +208,15 @@ module necv810_bus_engine #(
 					pin_be_q <= 4'b0000;
 					pin_rw_q <= 1'b1;
 				end else if (clk_en_i) begin
-					if (accepted_w) begin
+					if (restore_idle_i) begin
+						pin_a_q <= restore_phase_i ? launch_addr_i[31:1] + 31'd1 :
+							{launch_addr_i[31:2], launch_addr_i[1] && fixed_16_i};
+						pin_be_q <= byte_enable_fn(fixed_16_i, restore_phase_i && !fixed_16_i,
+							launch_size_i, restore_phase_i, launch_addr_i[1:0]);
+						pin_rw_q <= !launch_write_i;
+					end else if (release_halt_i && !active_q && (sys_q == 2'b11)) begin
+						pin_be_q <= 4'b0000;
+					end else if (accepted_w) begin
 						if (split_word_first_w) begin
 							pin_a_q <= addr_q[31:1] + 31'd1;
 							pin_be_q <= byte_enable_fn(fixed_16_i, !fixed_16_i, size_q, 1'b1, addr_q[1:0]);
@@ -202,7 +230,7 @@ module necv810_bus_engine #(
 							pin_be_q <= byte_enable_fn(fixed_16_i, 1'b0, launch_size_i, 1'b0,
 								launch_addr_i[1:0]);
 							pin_rw_q <= !launch_write_i;
-						end else begin
+						end else if (sys_q == 2'b00) begin
 							pin_be_q <= 4'b0000;
 						end
 					end else if (direct_accept_w) begin
@@ -243,8 +271,9 @@ module necv810_bus_engine #(
 			fetch_q <= launch_fetch_i;
 			fetch_branch_q <= launch_fetch_branch_i;
 			write_q <= launch_write_i;
-			posted_q <= launch_posted_i;
+			posted_q <= launch_posted_i && (launch_sys_i == 2'b00);
 			io_q <= launch_io_i;
+			sys_q <= launch_sys_i;
 			addr_error_q <= launch_addr_error_i;
 			size_q <= launch_size_i;
 			phase_q <= 1'b0;
@@ -277,6 +306,7 @@ module necv810_bus_engine #(
 			write_q <= 1'b0;
 			posted_q <= 1'b0;
 			io_q <= 1'b0;
+			sys_q <= 2'b00;
 			addr_error_q <= 1'b0;
 			size_q <= 2'b01;
 			phase_q <= 1'b0;
@@ -295,11 +325,20 @@ module necv810_bus_engine #(
 		end else if (clk_en_i) begin
 			cycle_start_q <= 1'b0;
 			t1_q <= 1'b0;
-			if (accepted_w) begin
+			if (release_halt_i && !active_q && (sys_q == 2'b11)) sys_q <= 2'b00;
+			if (restore_idle_i) begin
+				launch_to_active_task;
+				active_q <= 1'b0;
+				cycle_start_q <= 1'b0;
+				cycle_tag_q <= cycle_tag_q;
+				phase_q <= restore_phase_i;
+				second_a_q <= launch_addr_i[31:1] + 31'd1;
+				split_dynamic_q <= restore_phase_i && !fixed_16_i;
+			end else if (accepted_w) begin
 				// Keep the low half until the high beat or next fetch half arrives.
 				if (!write_q && (split_word_first_w ||
 					(launch_i && launch_fetch_i && fetch_q))) begin
-					first_half_q <= read_halfword_fn(din_i, fixed_16_i, addr_q[1]);
+					first_half_q <= read_halfword_fn(din_i, low_lanes_w, addr_q[1]);
 				end
 				if (split_word_first_w) begin
 					second_a_q <= addr_q[31:1] + 31'd1;
@@ -319,6 +358,7 @@ module necv810_bus_engine #(
 					write_q <= 1'b1;
 					posted_q <= 1'b1;
 					io_q <= pending_io_q;
+					sys_q <= 2'b00;
 					addr_error_q <= pending_addr_error_q;
 					size_q <= pending_size_q;
 					phase_q <= 1'b0;
@@ -396,19 +436,19 @@ module necv810_bus_engine #(
 					default: write_data_fn = {16'd0, data[15:0]};
 				endcase
 			end else if (split_dynamic && phase) begin
-				write_data_fn = {data[31:16], 16'd0};
+				write_data_fn = {data[31:16], data[31:16]};
 			end else begin
 				case (size)
 					SIZE_B: begin
 						case (addr_low)
 							2'b00: write_data_fn = {24'd0, data[7:0]};
 							2'b01: write_data_fn = {16'd0, data[7:0], 8'd0};
-							2'b10: write_data_fn = {8'd0, data[7:0], 16'd0};
-							default: write_data_fn = {data[7:0], 24'd0};
+							2'b10: write_data_fn = {8'd0, data[7:0], 8'd0, data[7:0]};
+							default: write_data_fn = {data[7:0], 8'd0, data[7:0], 8'd0};
 						endcase
 					end
 					2'b01: write_data_fn = addr_low[1] ?
-						{data[15:0], 16'd0} : {16'd0, data[15:0]};
+						{data[15:0], data[15:0]} : {16'd0, data[15:0]};
 					default: write_data_fn = data;
 				endcase
 			end
@@ -417,18 +457,17 @@ module necv810_bus_engine #(
 
 	function [15:0] read_halfword_fn;
 		input [31:0] data;
-		input fixed_16;
+		input low_lanes;
 		input addr_bit1;
 		begin
-			read_halfword_fn = (fixed_16 || !addr_bit1) ? data[15:0] : data[31:16];
+			read_halfword_fn = (low_lanes || !addr_bit1) ? data[15:0] : data[31:16];
 		end
 	endfunction
 
 	function [31:0] read_data_fn;
 		input [31:0] data;
 		input [15:0] first_half;
-		input fixed_16;
-		input split_dynamic;
+		input low_lanes;
 		input [1:0] size;
 		input phase;
 		input [1:0] addr_low;
@@ -437,7 +476,7 @@ module necv810_bus_engine #(
 		begin
 			byte_v = 8'd0;
 			half_v = 16'd0;
-			if (fixed_16) begin
+			if (low_lanes) begin
 				byte_v = addr_low[0] ? data[15:8] : data[7:0];
 			end else begin
 				case (addr_low)
@@ -447,13 +486,12 @@ module necv810_bus_engine #(
 					default: byte_v = data[31:24];
 				endcase
 			end
-			half_v = read_halfword_fn(data, fixed_16, addr_low[1]);
+			half_v = read_halfword_fn(data, low_lanes, addr_low[1]);
 			case (size)
 				SIZE_B: read_data_fn = {24'd0, byte_v};
 				SIZE_W: begin
 					if (phase) begin
-						read_data_fn = split_dynamic ?
-							{data[31:16], first_half} : {data[15:0], first_half};
+						read_data_fn = {data[15:0], first_half};
 					end else begin
 						read_data_fn = data;
 					end

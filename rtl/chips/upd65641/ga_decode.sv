@@ -21,6 +21,7 @@ module ga_decode
 	input  logic  [5:2]  a_reg,
 	input  logic         hi,
 	input  logic         mrq_n,
+	input  logic  [1:0]  st,
 	input  logic         rw,
 	input  logic  [1:0]  bkup,
 
@@ -38,7 +39,10 @@ always_comb begin
 	ioa      = {a_reg, hi};
 	wait_cnt = 4'd2;
 
-	if (io) begin
+	// Acknowledgements bypass address aliases and every device select.
+	if (mrq_n && ((st == 2'b01) || (st == 2'b11))) begin
+		kind = K_NONE;
+	end else if (io) begin
 		wait_cnt = 4'd4;
 		if (a22) begin
 			kind     = K_EXP;

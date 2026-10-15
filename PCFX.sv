@@ -431,7 +431,8 @@ wire [15:0] ka_d, ka_q, kb_d, kb_q;
 wire [19:0] cd_blk_lba;
 wire [15:0] cd_blk_base, cd_buf_addr;
 wire  [2:0] cd_blk_cnt;
-wire        cd_blk_rd, cd_blk_done, cd_blk_err, cd_disc, cd_toc_busy, cd_toc_new;
+wire        cd_blk_rd, cd_blk_done, cd_blk_err, cd_blk_busy, cd_blk_fault;
+wire        cd_disc, cd_toc_busy, cd_toc_new;
 wire  [7:0] cd_buf_dout;
 wire  [6:0] cd_toc_first, cd_toc_last;
 wire [15:0] audio_l, audio_r;
@@ -654,6 +655,8 @@ pcfx_mainboard #(
 	.cd_blk_rd          (cd_blk_rd),
 	.cd_blk_done        (cd_blk_done),
 	.cd_blk_err         (cd_blk_err),
+	.cd_blk_busy        (cd_blk_busy),
+	.cd_blk_fault       (cd_blk_fault),
 	.cd_buf_addr        (cd_buf_addr),
 	.cd_buf_dout        (cd_buf_dout),
 	.cd_disc            (cd_disc),
@@ -726,6 +729,8 @@ pcfx_cd_host pcfx_cd_host
 	.blk_rd         (cd_blk_rd),
 	.blk_done       (cd_blk_done),
 	.blk_err        (cd_blk_err),
+	.blk_busy       (cd_blk_busy),
+	.blk_fault      (cd_blk_fault),
 	.buf_addr       (cd_buf_addr),
 	.buf_dout       (cd_buf_dout),
 	.toc_busy       (cd_toc_busy),

@@ -22,7 +22,7 @@ module king_bg_mprog #(
 	output logic        mpsw,
 	output huc6272_pkg::mpw_t wa,    // bank A word for the planned dot
 	output huc6272_pkg::mpw_t wb,
-	output logic  [3:0] has_cg,      // BG has a CG slot in the program
+	output logic [1:0][3:0] has_cg,  // CG slots per bank and BG
 
 	input  logic        ss_shift,
 	input  logic        ss_si,
@@ -64,10 +64,10 @@ assign wa   = mpw_t'(st.mp[ia]);
 assign wb   = mpw_t'(st.mp[ib]);
 
 always_comb begin
-	has_cg = 4'd0;
+	has_cg = '0;
 	for (int i = 0; i < 16; i++)
 		if (!st.mp[i][8] && !st.mp[i][4])
-			has_cg[st.mp[i][7:6]] = 1'b1;
+			has_cg[i >= 8][st.mp[i][7:6]] = 1'b1;
 end
 
 endmodule

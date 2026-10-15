@@ -3,10 +3,10 @@
 //   FF  kind  len_hi  len_lo  data ...      kind FF (Q tables + DCT), F8
 //                                           (DCT), F0-F3 (run length)
 //
-// Anything else is skipped while hunting for FF. The length counts itself
-// and every byte after it, stuffing included; when it runs out the request
-// to KING is dropped until the judgment re-arms the parser. In the data a
-// byte after FF is stuffing and is dropped.
+// Anything else is skipped while hunting for FF. The length counts data
+// and alignment padding after the header, stuffing included; when it runs
+// out the request to KING is dropped until the judgment re-arms the parser.
+// In the data a byte after FF is stuffing and is dropped.
 
 module huc6271_parser #(
 	parameter bit SAVESTATE = 1'b1
@@ -65,14 +65,23 @@ always_ff @(posedge clk) begin
 					ps     <= P_LENL;
 				end
 				P_LENL: begin
-					cnt   <= len - 16'd2;
+					cnt   <= len;
 					stuff <= 1'b0;
-					if (len > 16'd2) begin
+					if (!len[15] && len > 16'd2) begin
 						hdr <= 1'b1;
 						ps  <= P_DATA;
+					end else if (kind == 8'hFF) begin
+						// Rejected table headers still carry 128 raw bytes.
+						cnt <= 16'd128;
+						ps  <= P_SKIP;
 					end else begin
 						ps  <= P_HUNT;
 					end
+				end
+				P_SKIP: begin
+					cnt <= cnt - 16'd1;
+					if (cnt == 16'd1)
+						ps <= P_HUNT;
 				end
 				P_DATA: begin
 					cnt    <= cnt - 16'd1;

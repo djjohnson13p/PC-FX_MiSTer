@@ -10,7 +10,6 @@ module NECv810
 	parameter [31:0] RESET_PC  = 32'hffff_fff0,
 	parameter [31:0] RESET_PSW = 32'h0000_8000,
 	parameter        IO_MRQ    = 0,            // 1: MRQ inactive on IN/OUT cycles.
-	parameter        BITSTR_NEC = 0,           // 1: arithmetic bit strings take NEC Table 5-13 clocks.
 	parameter        T2_PINS   = 0,            // 1: every bus cycle shows T1 and T2 on the pins.
 	parameter        VB_EXT    = 1             // 1: Virtual Boy extras (CLI, SEI, XB, XH, REV, MPYHW, PIR 5346).
 )
@@ -219,6 +218,10 @@ module NECv810
 	localparam [5:0] STATE_IFETCH_DISCARD   = 6'd43;
 	localparam [5:0] STATE_SAVESTATE_HOLD   = 6'd44;
 	localparam [5:0] STATE_PIPE_ISSUE       = 6'd45;
+	localparam [5:0] STATE_HALT_REQ         = 6'd46;
+	localparam [5:0] STATE_HALT_WAIT        = 6'd47;
+	localparam [5:0] STATE_HALT_IDLE        = 6'd48;
+	localparam [5:0] STATE_FATAL_IDLE       = 6'd49;
 
 	localparam [1:0] SIZE_B = 2'b00;
 	localparam [1:0] SIZE_H = 2'b01;
@@ -472,12 +475,10 @@ module NECv810
 	localparam [2:0] BS_TYPE5    = 3'd4;
 	localparam [2:0] BS_TYPE6    = 3'd5;
 	localparam [2:0] BS_TYPE7    = 3'd6;
-	localparam [1:0] BSWAIT_START  = 2'd0;
-	localparam [1:0] BSWAIT_RESUME = 2'd1;
 	localparam [1:0] BSWAIT_RETIRE = 2'd2;
 	localparam [1:0] BSWAIT_NEXT   = 2'd3;
 	// Clocks of a bit string spent outside its counted word steps.
-	localparam [7:0] BS_NEC_OVERHEAD = 8'd2;
+	localparam [7:0] BS_ARITH_OVERHEAD = 8'd2;
 	localparam [1:0] ABORT_ENGINE_LONG   = 2'd1;
 	localparam [1:0] ABORT_ENGINE_BITSTR = 2'd2;
 
@@ -578,6 +579,9 @@ module NECv810
 	end
 
 	reg        halted_q;
+	reg        fatal_q;
+	reg        fatal_split_q;
+	reg [31:0] halt_pc_q;
 	reg        illegal_q;
 	reg        cache_enable_q;
 	reg        cache_enable_pending_q;
@@ -653,8 +657,6 @@ module NECv810
 	wire        pipe_ready_w;
 	wire [31:0] pipe_iw_w;
 	wire        pipe_busy_w;
-	wire        pf_pin_own_w;
-	wire        pf_pin_own_c_w;
 	wire        pipe_done_w;
 	wire        pipe_hold_w;
 	// A load or IN that is next to issue has its address formed in the clock
@@ -685,6 +687,7 @@ module NECv810
 	reg         bus_launch_write_v;
 	reg         bus_launch_posted_v;
 	reg         bus_launch_io_v;
+	reg  [1:0]  bus_launch_sys_v;
 	reg         bus_launch_addr_error_v;
 	reg  [1:0]  bus_launch_size_v;
 	reg  [31:0] bus_launch_wdata_v;
@@ -744,7 +747,6 @@ module NECv810
 	reg [31:0] chcw_tag_q;
 	reg        caxi_active_q;
 	reg [31:0] caxi_addr_q;
-	reg        caxi_addr_error_q;
 	reg [31:0] caxi_loaded_q;
 	reg        caxi_match_q;
 	reg [31:0] caxi_store_data_q;
@@ -846,7 +848,6 @@ module NECv810
 	reg        exec_bs_search_last_partial_q;
 	reg [2:0]  exec_bs_type_q;
 	reg        exec_bs_need_src_hi_q;
-	reg [5:0]  exec_bs_start_cycles_q;
 	reg [5:0]  exec_bs_zero_cycles_q;
 	reg [31:0] bs_search_count_q;
 	reg [15:0] rf_issue_half_v;
@@ -1007,12 +1008,8 @@ module NECv810
 		bs_arith_type_fn(exec_bs_r28_raw_w, exec_bs_r30_raw_w, exec_bs_r29_raw_w, exec_bs_r27_raw_w, exec_bs_r26_raw_w);
 	wire        exec_bs_need_src_hi_raw_w =
 		(({1'b0, exec_bs_r27_raw_w} + bs_step_fn(exec_bs_r28_raw_w, exec_bs_r26_raw_w)) > 6'd32);
-	wire [5:0]  exec_bs_search_start_cycles_raw_w =
-		bs_search_start_cycles_fn(exec_bs_search_words_total_raw_w, exec_bs_search_first_partial_raw_w, exec_iw_q[16]);
 	wire [5:0]  exec_bs_search_zero_cycles_raw_w =
 		bs_search_zero_cycles_fn(exec_iw_q[16]);
-	wire [5:0]  exec_bs_arith_start_cycles_raw_w =
-		bs_arith_start_cycles_fn(exec_bs_type_raw_w, siz16b_q);
 	wire [5:0]  exec_bs_arith_zero_cycles_raw_w =
 		bs_arith_zero_cycles_fn(exec_bs_type_raw_w, siz16b_q);
 	wire [31:0] bcond_target_raw_w   = exec_pc_q + sx9_fn(exec_disp9_raw_w);
@@ -1299,6 +1296,11 @@ module NECv810
 	// they also hold interrupts off; with it an interrupt is taken at the
 	// instruction boundary and its handler fetch waits for the bus.
 	wire        irq_posted_ok_w = T2_PINS || !posted_write_busy_w;
+	// Qualify with CLI's cleared ID before admitting its successor.
+	wire        cli_retire_irq_w = (long_kind_q == LONG_CLI) &&
+		irq_posted_ok_w && !irq_defer_q &&
+		(interrupt_accepted_fn(irq_valid_i, irq_level_i, psw_q & ~PSW_ID_MASK) ||
+		 interrupt_accepted_fn(cache_irq_pending_q, cache_irq_level_q, psw_q & ~PSW_ID_MASK));
 	wire [1:0]  halted_async_exc_kind_w =
 		async_exception_kind_fn(1'b0, nmi_accept_w, irq_posted_ok_w && irq_accept_now_w);
 	wire [1:0]  front_async_exc_kind_w =
@@ -1360,7 +1362,7 @@ module NECv810
 	wire        bitstr_abortable_final_w =
 		(state_q == STATE_BS_TIMING_WAIT) &&
 		(bs_cycles_q == 6'd1) &&
-		(bs_wait_action_q == BSWAIT_RESUME) &&
+		(bs_wait_action_q == BSWAIT_NEXT) &&
 		abortable_engine_fn(ABORT_ENGINE_BITSTR, 4'd0);
 	wire [1:0]  abort_async_exc_kind_w =
 		async_exception_kind_fn(1'b0, nmi_accept_w, irq_posted_ok_w && irq_accept_now_w);
@@ -1370,7 +1372,7 @@ module NECv810
 	// CE, so it launched nothing for the successor, and no overlapped load
 	// is still in flight.
 	wire        savestate_retire_boundary_w = trace_valid_o && savestate_req_ce_q &&
-		!long_load_overlap_q;
+		!long_load_overlap_q && !special_stop_w;
 	// A retained retire pulse may overlap the already-selected successor. Keep
 	// every iterative engine idle on the edge that redirects the parent into
 	// checkpoint hold, otherwise that successor has no STATE_LONG finish edge.
@@ -1460,12 +1462,7 @@ module NECv810
 	wire [31:0] bs_launch_len_w = exec_bs_r28_q;
 	wire [4:0]  bs_launch_src_ofs_w = exec_bs_r27_q;
 	wire [4:0]  bs_launch_dst_ofs_w = exec_bs_r26_q;
-	wire [5:0]  bs_search_resume_cycles_w =
-		bs_search_resume_cycles_fn(bs_first_partial_q, bs_last_partial_q, bs_down_q, bs_total_words_q, bs_word_index_q, siz16b_q);
-	wire [5:0]  bs_post_cycles_w =
-		bs_arith_resume_cycles_fn(bs_type_q, bs_total_words_q, bs_word_index_q, siz16b_q);
-	wire        bs_first_launch_w = !bs_seq_active_q || (bs_seq_pc_q != exec_pc_q);
-	// NEC timing mode: arithmetic word steps loop in place, reuse the source
+	// Arithmetic word steps loop in place, reuse the source
 	// word already read, and pad each step to the table's clock count. The
 	// budget counts down on CE except while a bus beat waits for READY.
 	// A word split by SZRQ on the 32-bit bus takes a second bus cycle; the
@@ -1473,11 +1470,11 @@ module NECv810
 	// With T2_PINS the second cycle's own T1 supplies that clock.
 	wire        bus_dynamic_split_w = !T2_PINS && !siz16b_q && active_phase_q;
 	wire        bus_dynamic_first_w = !siz16b_q && bus_first_beat_w;
-	wire        bs_nec_w = BITSTR_NEC && !bs_search_q;
-	wire        bs_budget_count_w = bs_nec_w &&
+	wire        bs_budget_count_w =
 		((state_q == STATE_BS_SRC_REQ) || (state_q == STATE_BS_SRC_WAIT) ||
 		 (state_q == STATE_BS_DST_REQ) || (state_q == STATE_BS_DST_WAIT) ||
-		 (state_q == STATE_BS_WRITE_REQ) || (state_q == STATE_BS_WRITE_WAIT)) &&
+		 (state_q == STATE_BS_WRITE_REQ) || (state_q == STATE_BS_WRITE_WAIT) ||
+		 (state_q == STATE_BS_SEARCH_SCAN) || (state_q == STATE_BS_SEARCH_COMMIT)) &&
 		!(active_q && !ready_i && !bus_t1_w);
 	// A step that overruns its clocks carries the deficit into the next.
 	wire signed [8:0] bs_budget_after_w = bs_budget_q - 9'sd1;
@@ -1491,7 +1488,7 @@ module NECv810
 	// Interrupts enter between word steps, before the next step's first beat.
 	// TYPE4 destinations span one word more or less than their sources.
 	wire [31:0] bs_launch_dst_words_w = bs_word_count_fn(bs_launch_len_w, bs_launch_dst_ofs_w);
-	wire        bs_step_abort_w = bs_nec_w && bs_step_first_q &&
+	wire        bs_step_abort_w = bs_step_first_q &&
 		((state_q == STATE_BS_SRC_REQ) || (state_q == STATE_BS_DST_REQ)) &&
 		(abort_async_exc_kind_w != ASYNC_EXC_NONE);
 	wire [63:0] bs_source_align_w = bitstr_source_align_fn(
@@ -1573,6 +1570,15 @@ module NECv810
 						if (!bs_src_second_q && bs_need_src_hi_q) begin
 							bs_pre_v = 1'b1;
 							bs_pre_addr_v = bs_src_addr_q + 32'd4;
+						end else if (bs_search_q) begin
+							if ((bs_search_partial_len_w != 32'd0) && !bs_budget_pad_w &&
+								(abort_async_exc_kind_w == ASYNC_EXC_NONE) &&
+								!bs_search_match_any_fn(bus_read_data_w, bs_src_ofs_q,
+									bs_search_step_w, bs_search_bit_q, bs_down_q)) begin
+								bs_pre_v = 1'b1;
+								bs_pre_addr_v = bs_search_addr_advance_fn(bs_src_addr_q,
+									bs_src_ofs_q, bs_search_step_w, bs_down_q);
+							end
 						end else if (bs_src_second_q || !bs_search_q) begin
 							bs_pre_v = 1'b1;
 						end
@@ -1584,7 +1590,7 @@ module NECv810
 					bs_pre_write_v = 1'b1;
 				end
 				STATE_BS_WRITE_WAIT: begin
-					if (bus_complete_w && bs_nec_w && (bs_next_len_w != 32'd0) &&
+					if (bus_complete_w && (bs_next_len_w != 32'd0) &&
 						!bs_budget_pad_w && (abort_async_exc_kind_w == ASYNC_EXC_NONE)) begin
 						bs_pre_v = 1'b1;
 						bs_pre_addr_v = bs_next_src_read_w ?
@@ -1595,9 +1601,9 @@ module NECv810
 				STATE_BS_TIMING_WAIT: begin
 					if ((bs_cycles_q == 6'd1) && (bitstr_async_exc_kind_w == ASYNC_EXC_NONE) &&
 						(abort_async_exc_kind_w == ASYNC_EXC_NONE) &&
-						((bs_wait_action_q == BSWAIT_NEXT) || (bs_wait_action_q == BSWAIT_START))) begin
+						(bs_wait_action_q == BSWAIT_NEXT)) begin
 						bs_pre_v = 1'b1;
-						bs_pre_addr_v = ((bs_wait_action_q == BSWAIT_START) || bs_next_src_q) ?
+						bs_pre_addr_v = bs_next_src_q ?
 							(bs_src_addr_q + (bs_src_second_q ? 32'd4 : 32'd0)) : bs_dst_addr_q;
 					end
 				end
@@ -1637,6 +1643,7 @@ module NECv810
 		bus_launch_write_v = 1'b0;
 		bus_launch_posted_v = 1'b0;
 		bus_launch_io_v = 1'b0;
+		bus_launch_sys_v = 2'b00;
 		bus_launch_addr_error_v = 1'b0;
 		bus_launch_size_v = SIZE_H;
 		bus_launch_wdata_v = 32'd0;
@@ -1707,7 +1714,6 @@ module NECv810
 						// The locked read starts its T1 as CAXI leaves EXEC.
 						select_bus_launch_task(
 							exec_mem_addr_w, 1'b0, 1'b0, 1'b0, 1'b0, SIZE_W, 32'd0);
-						bus_launch_addr_error_v = address_error_fn(exec_eff_addr_q, SIZE_W);
 					end else if (exec_wrong_path_word_fetch_w) begin
 						select_bus_launch_task(
 							({exec_seq_pc_q[31:2], 2'b00} + 32'd4),
@@ -1718,11 +1724,30 @@ module NECv810
 					end
 				end
 
+				STATE_HALT_REQ: begin
+					if (!active_q) begin
+						select_bus_launch_task(halt_pc_q, 1'b0, 1'b0, 1'b1,
+							1'b0, SIZE_H, {16'd0, psw_q[15:0]});
+						bus_launch_sys_v = 2'b11;
+					end
+				end
+
+				STATE_SAVESTATE_HOLD: begin
+					if (halted_q && !savestate_pause_req_i) begin
+						select_bus_launch_task(fatal_q ? 32'd8 : pc_q - 32'd2,
+							1'b0, 1'b0, 1'b1, 1'b0, fatal_q ? SIZE_W : SIZE_H,
+							fatal_q ? pc_q : {16'd0, psw_q[15:0]});
+						bus_launch_v = 1'b0;
+						bus_launch_sys_v = fatal_q ? 2'b01 : 2'b11;
+					end
+				end
+
 				STATE_FATAL_REQ: begin
 					if (!active_q) begin
 						select_bus_launch_task(
 							{28'd0, fatal_index_q, 2'b00}, 1'b0, 1'b0, 1'b1,
 							1'b0, SIZE_W, fatal_wdata_fn(fatal_index_q, exc_code_q, psw_q, pc_q));
+						bus_launch_sys_v = 2'b01;
 					end
 				end
 
@@ -1738,7 +1763,6 @@ module NECv810
 					if (!active_q) begin
 						select_bus_launch_task(
 							caxi_addr_q, 1'b0, 1'b0, 1'b0, 1'b0, SIZE_W, 32'd0);
-						bus_launch_addr_error_v = caxi_addr_error_q;
 					end
 				end
 
@@ -1747,7 +1771,6 @@ module NECv810
 					if (T2_PINS && bus_complete_w) begin
 						select_bus_launch_task(
 							caxi_addr_q, 1'b0, 1'b0, 1'b1, 1'b0, SIZE_W, 32'd0);
-						bus_launch_addr_error_v = caxi_addr_error_q;
 					end
 				end
 
@@ -1755,7 +1778,6 @@ module NECv810
 					if (!active_q) begin
 						select_bus_launch_task(
 							caxi_addr_q, 1'b0, 1'b0, 1'b1, 1'b0, SIZE_W, caxi_store_data_q);
-						bus_launch_addr_error_v = caxi_addr_error_q;
 					end
 				end
 
@@ -2139,6 +2161,48 @@ module NECv810
 		end
 	endtask
 
+	// Advance the architectural cursor once, then pace or finish this word.
+	task bitstr_search_commit_task;
+		input found;
+		input [5:0] skip;
+		reg [5:0] advance_v;
+		reg [31:0] next_len_v;
+		reg signed [8:0] budget_v;
+		begin
+			advance_v = found ? (skip + 6'd1) : bs_search_step_w;
+			next_len_v = bs_len_q - {26'd0, advance_v};
+			bs_src_addr_q <= bs_search_addr_advance_fn(bs_src_addr_q, bs_src_ofs_q, advance_v, bs_down_q);
+			bs_src_ofs_q <= bs_search_ofs_advance_fn(bs_src_ofs_q, advance_v, bs_down_q);
+			bs_len_q <= next_len_v;
+			bs_search_count_q <= bs_search_count_q + {26'd0, skip};
+			request_psw_write_task(PSW_Z_MASK, found ? 32'd0 : PSW_Z_MASK);
+			if (found || (next_len_v == 32'd0)) begin
+				budget_v = bs_budget_after_w + $signed({1'b0, bs_search_tail_cycles_fn(
+					bs_first_partial_q, bs_last_partial_q, bs_down_q,
+					bs_total_words_q, bs_word_index_q, found)});
+				bs_seq_active_q <= 1'b0;
+				bs_wait_action_q <= BSWAIT_RETIRE;
+				bs_cycles_q <= ((budget_v > 9'sd0) ? budget_v[5:0] : 6'd0) + 6'd1;
+				state_q <= STATE_BS_TIMING_WAIT;
+			end else begin
+				bs_seq_active_q <= 1'b1;
+				bs_word_index_q <= bs_word_index_q + 32'd1;
+				bs_next_src_q <= 1'b1;
+				if (bs_budget_pad_w) begin
+					bs_wait_action_q <= BSWAIT_NEXT;
+					bs_cycles_q <= bs_budget_after_w[5:0];
+					state_q <= STATE_BS_TIMING_WAIT;
+				end else begin
+					bs_budget_q <= bs_budget_after_w + $signed(bs_search_step_cycles_fn(
+						bs_first_partial_q, bs_last_partial_q, bs_down_q,
+						bs_total_words_q, bs_word_index_q + 32'd1, siz16b_q));
+					bs_step_first_q <= 1'b1;
+					state_q <= STATE_BS_SRC_REQ;
+				end
+			end
+		end
+	endtask
+
 	// Leave a bit string between word steps for an interrupt or NMI.
 	task bitstr_step_abort_task;
 		begin
@@ -2148,6 +2212,17 @@ module NECv810
 			exc_code_q <= async_exception_code_fn(abort_async_exc_kind_w, irq_accept_level_w);
 			exc_restore_pc_q <= {exec_pc_q[31:1], 1'b0};
 			state_q <= STATE_EXC_ENTER;
+		end
+	endtask
+
+	// An interrupt taken where a bit string re-issues for its next word keeps
+	// the progress made so far.
+	task bitstr_front_checkpoint_task;
+		begin
+			if (bs_seq_active_q && (pc_q == bs_seq_pc_q)) begin
+				publish_bitstr_checkpoint_task();
+				bs_seq_active_q <= 1'b0;
+			end
 		end
 	endtask
 
@@ -2267,7 +2342,17 @@ module NECv810
 	wire        pipe_issue_w = (state_q == STATE_PIPE_ISSUE);
 	wire        pipe_redirect_w = T2_PINS && pipe_issue_w && !pipe_redir_done_q &&
 		((pc_q[31:1] != exec_seq_pc_q[31:1]) || pipe_ctl_redirect_q);
-	wire        pipe_flush_w = (state_q == STATE_SAVESTATE_HOLD) || (state_q == STATE_CACHE_INIT);
+	// Finish a fetch already in flight, but discard it and start no successor.
+	wire        special_stop_w = halted_q || fatal_q ||
+		(state_q == STATE_HALT_REQ) || (state_q == STATE_HALT_WAIT) ||
+		(state_q == STATE_HALT_IDLE) || (state_q == STATE_FATAL_REQ) ||
+		(state_q == STATE_FATAL_WAIT) || (state_q == STATE_FATAL_IDLE) ||
+		((state_q == STATE_EXEC) && (ucode_kind_w == MK_HALT)) ||
+		((state_q == STATE_EXC_ENTER) && exc_entry_fatal_w) ||
+		(psw_q[15] && (((state_q == STATE_EXEC) && (ucode_kind_w == MK_TRAP)) ||
+		 ((state_q == STATE_TIMING_WAIT) && (timing_kind_q == TIMING_TRAP))));
+	wire        pipe_flush_w = special_stop_w ||
+		(state_q == STATE_SAVESTATE_HOLD) || (state_q == STATE_CACHE_INIT);
 	// A data cycle may start its T1 right after a fetch word's last T2.
 	assign pipe_hold_w = pipe_busy_w && !pipe_done_w;
 	// Start no bus cycle on the edge that enters checkpoint hold.
@@ -2330,8 +2415,8 @@ module NECv810
 				.szrq_i(szrq_i),
 				.din_i(din_i),
 				.data_wait_i(eng_active_w || bus_launch_v || store_pending_w || data_req_state_w ||
-					hldrq_i),
-				.want_valid_i(pipe_issue_w || pipe_stream_q),
+					hldrq_i || special_stop_w),
+				.want_valid_i((pipe_issue_w || pipe_stream_q) && !special_stop_w),
 				.want_pc_i(pipe_issue_w ? pc_q[31:1] : pipe_next_pc_w[31:1]),
 				.redirect_i(pipe_redirect_w),
 				.bubble_i(pipe_bubble_q && pipe_ctl_redirect_q),
@@ -2347,8 +2432,6 @@ module NECv810
 				.ic_wr_data_o(pf_ic_wr_data_w),
 				.ic_tag_wr_o(pf_ic_tag_wr_w),
 				.busy_o(pipe_busy_w),
-				.pin_own_o(pf_pin_own_w),
-				.pin_own_c_o(pf_pin_own_c_w),
 				.done_o(pipe_done_w),
 				.ready_o(pipe_ready_w),
 				.iw_o(pipe_iw_w),
@@ -2360,8 +2443,6 @@ module NECv810
 			);
 		end else begin : g_no_prefetch
 			assign pipe_busy_w = 1'b0;
-			assign pf_pin_own_w = 1'b0;
-			assign pf_pin_own_c_w = 1'b0;
 			assign pipe_done_w = 1'b0;
 			assign pipe_ready_w = 1'b0;
 			assign pf_ic_rd_w = 1'b0;
@@ -2395,6 +2476,12 @@ module NECv810
 		.launch_write_i(bus_launch_write_v),
 		.launch_posted_i(bus_launch_posted_v),
 		.launch_io_i(bus_launch_io_v),
+		.launch_sys_i(bus_launch_sys_v),
+		.restore_idle_i((state_q == STATE_SAVESTATE_HOLD) &&
+			halted_q && !savestate_pause_req_i),
+		.restore_phase_i(fatal_q && fatal_split_q),
+		.release_halt_i((state_q == STATE_HALT_IDLE) && !savestate_state_wren_i &&
+			!savestate_hold_enter_w && (halted_async_exc_kind_w != ASYNC_EXC_NONE)),
 		.launch_addr_error_i(bus_launch_addr_error_v),
 		.launch_size_i(bus_launch_size_v),
 		.launch_wdata_i(bus_launch_wdata_v),
@@ -2482,8 +2569,8 @@ module NECv810
 		.exception_code_o(fp_engine_exc_code_w)
 	);
 	// A fetch word in flight owns the pins.
-	wire        pf_own_w = T2_PINS && pf_pin_own_c_w;
-	assign bus_a_w = (T2_PINS && pf_pin_own_w) ? pf_a_w : eng_a_w;
+	wire        pf_own_w = T2_PINS && pipe_busy_w;
+	assign bus_a_w = pf_own_w ? pf_a_w : eng_a_w;
 	assign bus_be_w = pf_own_w ? pf_be_w : eng_be_w;
 	assign bus_st_w = pf_own_w ? pf_st_w : eng_st_w;
 	assign da_o = pf_own_w ? pf_da_w : eng_da_w;
@@ -2535,7 +2622,9 @@ module NECv810
 			4'd3: savestate_state_rdata_o = {adtre_q, ecr_q};
 			4'd4: savestate_state_rdata_o = {sr31_q, sr29_q};
 			4'd5: savestate_state_rdata_o = {
-				25'd0,
+				23'd0,
+				fatal_split_q, // Word5[40]: final diagnostic word was split.
+				fatal_q, // Word5[39]: fatal, independent of PSW.NP.
 				cache_irq_level_q,
 				cache_irq_pending_q,
 				illegal_q,
@@ -2655,14 +2744,22 @@ module NECv810
 	reg [11:0] clear_count_v;
 	reg        hold_state_v;
 	reg [31:0] long32_v;
-	reg [6:0]  bs_search_result_v;
 	reg        bs_search_found_v;
-	reg [5:0]  bs_search_skip_v;
-	reg [5:0]  bs_search_advance_v;
-	reg [5:0]  bs_search_tail_v;
-	reg [31:0] bs_search_next_addr_v;
-	reg [4:0]  bs_search_next_ofs_v;
-	reg [31:0] bs_search_next_len_v;
+
+	// Track the reset-held level so release cannot create an NMI edge.
+	always @(posedge clk_i or posedge savestate_restore_i) begin
+		if (savestate_restore_i) begin
+			nmi_prev_q <= 1'b0;
+		end else if (reset_i) begin
+			nmi_prev_q <= nmi_i;
+		end else if (savestate_state_wren_i) begin
+			if (savestate_state_addr_i == 4'd5) begin
+				nmi_prev_q <= savestate_state_wdata_i[5];
+			end
+		end else if (ce_i) begin
+			nmi_prev_q <= nmi_i;
+		end
+	end
 
 	always @(posedge clk_i or posedge cpu_transient_reset_w) begin
 		if (cpu_transient_reset_w) begin
@@ -2683,6 +2780,9 @@ module NECv810
 			sr29_q <= 32'd0;
 			sr31_q <= 32'd0;
 			halted_q <= 1'b0;
+			fatal_q <= 1'b0;
+			fatal_split_q <= 1'b0;
+			halt_pc_q <= 32'd0;
 			illegal_q <= 1'b0;
 			// Cache starts disabled until CHCW enables it; ICHEEN is only permission.
 			cache_enable_q <= 1'b0;
@@ -2737,7 +2837,6 @@ module NECv810
 			chcw_tag_q <= 32'd0;
 			caxi_active_q <= 1'b0;
 			caxi_addr_q <= 32'd0;
-			caxi_addr_error_q <= 1'b0;
 			caxi_loaded_q <= 32'd0;
 			caxi_match_q <= 1'b0;
 			caxi_store_data_q <= 32'd0;
@@ -2768,7 +2867,7 @@ module NECv810
 			bs_seq_active_q <= 1'b0;
 			bs_seq_pc_q <= 32'd0;
 			bs_cycles_q <= 6'd0;
-			bs_wait_action_q <= BSWAIT_START;
+			bs_wait_action_q <= BSWAIT_RETIRE;
 			bs_budget_q <= 9'sd0;
 			bs_step_first_q <= 1'b0;
 			bs_next_src_q <= 1'b0;
@@ -2824,14 +2923,12 @@ module NECv810
 			exec_bs_search_last_partial_q <= 1'b0;
 			exec_bs_type_q <= BS_TYPE1;
 			exec_bs_need_src_hi_q <= 1'b0;
-			exec_bs_start_cycles_q <= 6'd0;
 			exec_bs_zero_cycles_q <= 6'd0;
 			bs_search_count_q <= 32'd0;
 			irq_defer_q <= 1'b0;
 			cache_irq_pending_q <= 1'b0;
 			cache_irq_level_q <= 4'd0;
 			nmi_pending_q <= 1'b0;
-			nmi_prev_q <= 1'b0;
 			fetch_defer_q <= 1'b0;
 			write_streak_q <= 2'd0;
 			trace_valid_o <= 1'b0;
@@ -2912,9 +3009,10 @@ module NECv810
 					end
 					4'd5: begin
 						halted_q <= savestate_state_wdata_i[0];
+						fatal_q <= savestate_state_wdata_i[39];
+						fatal_split_q <= savestate_state_wdata_i[40];
 						irq_defer_q <= savestate_state_wdata_i[3];
 						nmi_pending_q <= savestate_state_wdata_i[4];
-						nmi_prev_q <= savestate_state_wdata_i[5];
 						fetch_defer_q <= savestate_state_wdata_i[6];
 						write_streak_q <= savestate_state_wdata_i[8:7];
 						prev_retire_class_q <= savestate_state_wdata_i[11:9];
@@ -3107,10 +3205,8 @@ module NECv810
 					exec_bs_type_q <= exec_bs_type_raw_w;
 					exec_bs_need_src_hi_q <= exec_bs_need_src_hi_raw_w;
 					if (exec_iw_q[20:19] == 2'b00) begin
-						exec_bs_start_cycles_q <= exec_bs_search_start_cycles_raw_w;
 						exec_bs_zero_cycles_q <= exec_bs_search_zero_cycles_raw_w;
 					end else begin
-						exec_bs_start_cycles_q <= exec_bs_arith_start_cycles_raw_w;
 						exec_bs_zero_cycles_q <= exec_bs_arith_zero_cycles_raw_w;
 					end
 					state_q <= STATE_EXEC;
@@ -3157,7 +3253,6 @@ module NECv810
 					sysreg_exception_psw_we_v = 1'b0;
 					sysreg_exception_psw_v = psw_q;
 					illegal_q <= 1'b0;
-					nmi_prev_q <= nmi_i;
 					if ((state_q == STATE_CACHE_INIT) ||
 						(state_q == STATE_CACHE_CLEAR) ||
 						(state_q == STATE_CHCW_RAM_REQ) ||
@@ -3228,6 +3323,7 @@ module NECv810
 										state_q <= STATE_EXC_ENTER;
 									end
 								end else if (front_async_exc_kind_w != ASYNC_EXC_NONE) begin
+									bitstr_front_checkpoint_task();
 									exc_code_q <= async_exception_code_fn(front_async_exc_kind_w, irq_accept_level_w);
 									exc_restore_pc_q <= {pc_q[31:1], 1'b0};
 									state_q <= STATE_EXC_ENTER;
@@ -3336,6 +3432,7 @@ module NECv810
 										state_q <= STATE_EXC_ENTER;
 									end
 								end else if (front_async_exc_kind_w != ASYNC_EXC_NONE) begin
+									bitstr_front_checkpoint_task();
 									exc_code_q <= async_exception_code_fn(front_async_exc_kind_w, irq_accept_level_w);
 									exc_restore_pc_q <= {pc_q[31:1], 1'b0};
 									state_q <= STATE_EXC_ENTER;
@@ -3362,6 +3459,7 @@ module NECv810
 										state_q <= STATE_EXC_ENTER;
 									end
 								end else if (front_async_exc_kind_w != ASYNC_EXC_NONE) begin
+									bitstr_front_checkpoint_task();
 									exc_code_q <= async_exception_code_fn(front_async_exc_kind_w, irq_accept_level_w);
 									exc_restore_pc_q <= {pc_q[31:1], 1'b0};
 									state_q <= STATE_EXC_ENTER;
@@ -3629,7 +3727,7 @@ module NECv810
 													state_q <= STATE_LONG_LOAD_WAIT;
 												end else begin
 													// Reuse the resident cache window after normal long-op completion.
-													if (resident_sequential_successor_ready_w) begin
+													if (resident_sequential_successor_ready_w && !cli_retire_irq_w) begin
 														accept_resident_successor_task(
 															exec_df_producer_q, 7'd0,
 															exec_df_flags_q, exec_wb_flags_q,
@@ -3792,7 +3890,6 @@ module NECv810
 										MK_CAXI: begin
 											caxi_active_q <= 1'b1;
 											caxi_addr_q <= exec_mem_addr_w;
-											caxi_addr_error_q <= address_error_fn(exec_eff_addr_q, SIZE_W);
 											hold_state_v = 1'b1;
 											state_q <= (T2_PINS && bus_launch_accept_w) ?
 												STATE_CAXI_WAIT : STATE_CAXI_REQ;
@@ -3844,28 +3941,25 @@ module NECv810
 											if (bs_launch_len_w == 32'd0) begin
 												// Publish zero-length normalization atomically at retire.
 												bs_seq_active_q <= 1'b0;
-												bs_cycles_q <= exec_bs_zero_cycles_q;
+												bs_cycles_q <= exec_bs_zero_cycles_q - ((exec_bs_subop_q[4:3] == 2'b00) ? 6'd1 : 6'd0);
 												bs_wait_action_q <= BSWAIT_RETIRE;
 												hold_state_v = 1'b1;
 												state_q <= STATE_BS_TIMING_WAIT;
-											end else if (BITSTR_NEC && (exec_bs_subop_q[4:3] != 2'b00)) begin
+											end else if (exec_bs_subop_q[4:3] == 2'b00) begin
+												bs_seq_active_q <= 1'b1;
+												bs_budget_q <= $signed(bs_search_step_cycles_fn(
+													exec_bs_search_first_partial_q, exec_bs_search_last_partial_q,
+													exec_bs_subop_q[0], exec_bs_search_words_total_q, 32'd1, siz16b_q));
+												hold_state_v = 1'b1;
+												state_q <= STATE_BS_SRC_REQ;
+											end else begin
 												bs_seq_active_q <= 1'b1;
 												bs_dst_more_q <= (bs_launch_dst_words_w > exec_bs_words_total_q);
 												bs_dst_fewer_q <= (bs_launch_dst_words_w < exec_bs_words_total_q);
-												bs_budget_q <= {1'b0, bs_nec_step_cycles_fn(exec_bs_type_q, 32'd1,
+												bs_budget_q <= {1'b0, bs_arith_step_cycles_fn(exec_bs_type_q, 32'd1,
 													exec_bs_words_total_q,
 													bs_launch_dst_words_w > exec_bs_words_total_q,
 													bs_launch_dst_words_w < exec_bs_words_total_q, siz16b_q)};
-												hold_state_v = 1'b1;
-												state_q <= STATE_BS_SRC_REQ;
-											end else if (bs_first_launch_w && (exec_bs_start_cycles_q != 6'd0)) begin
-												bs_seq_active_q <= 1'b1;
-												bs_cycles_q <= exec_bs_start_cycles_q;
-												bs_wait_action_q <= BSWAIT_START;
-												hold_state_v = 1'b1;
-												state_q <= STATE_BS_TIMING_WAIT;
-											end else begin
-												bs_seq_active_q <= 1'b1;
 												hold_state_v = 1'b1;
 												state_q <= STATE_BS_SRC_REQ;
 											end
@@ -3873,21 +3967,22 @@ module NECv810
 
 										MK_HALT: begin
 											if (ucode_halt_w) begin
-												if (halted_async_exc_kind_w != ASYNC_EXC_NONE) begin
-													exc_code_q <= async_exception_code_fn(halted_async_exc_kind_w, irq_accept_level_w);
-													exc_restore_pc_q <= {exec_seq_pc_q[31:1], 1'b0};
-													hold_state_v = 1'b1;
-													state_q <= STATE_EXC_ENTER;
-												end else begin
-													halted_q <= 1'b1;
-													fetch_defer_q <= 1'b1;
-												end
+												halt_pc_q <= {exec_pc_q[31:1], 1'b0};
+												pc_q <= {exec_seq_pc_q[31:1], 1'b0};
+												retire_trace_task(exec_df_producer_q, exec_wb_producer_q,
+													exec_df_flags_q, exec_wb_flags_q, 2'd0);
+												update_retire_history_task(RETIRE_CLASS_OTHER, SIZE_H, 1'b0);
+												fetch_defer_q <= 1'b1;
+												hold_state_v = 1'b1;
+												state_q <= STATE_HALT_REQ;
 											end
 										end
 
 										MK_TRAP: begin
 											exc_code_q <= 16'hffa0 + {11'd0, exec_trap_vec_q};
-											exc_restore_pc_q <= {next_pc_v[31:1], 1'b0};
+											// A duplexed trap saves its own PC for the handler to advance.
+											exc_restore_pc_q <= psw_q[14] ? {exec_pc_q[31:1], 1'b0} :
+												{next_pc_v[31:1], 1'b0};
 											// TRAP waits for its documented 15 cycles before entry.
 											timing_kind_q <= TIMING_TRAP;
 											timing_cycles_q <= cycles_after_launch_fn(sys_timing_cycles_fn(TIMING_TRAP));
@@ -4077,6 +4172,7 @@ module NECv810
 										trace_pc_o <= exec_pc_q;
 										trace_insn_o <= exec_trace_insn_q;
 									end
+									fatal_q <= 1'b1;
 									fatal_index_q <= 2'd0;
 									state_q <= STATE_FATAL_REQ;
 								end else begin
@@ -4126,12 +4222,35 @@ module NECv810
 								if (bus_complete_w) begin
 									if (fatal_index_q == 2'd2) begin
 										halted_q <= 1'b1;
-										state_q <= fetch_restart_state_w;
+										fatal_split_q <= active_phase_q;
+										state_q <= STATE_FATAL_IDLE;
 									end else begin
 										fatal_index_q <= fatal_index_q + 2'd1;
 										state_q <= STATE_FATAL_REQ;
 									end
 								end
+							end
+
+							STATE_HALT_REQ: begin
+								if (bus_launch_accept_w) state_q <= STATE_HALT_WAIT;
+							end
+
+							STATE_HALT_WAIT: begin
+								if (bus_complete_w) begin
+									halted_q <= 1'b1;
+									state_q <= STATE_HALT_IDLE;
+								end
+							end
+
+							STATE_HALT_IDLE: begin
+								if (halted_async_exc_kind_w != ASYNC_EXC_NONE) begin
+									exc_code_q <= async_exception_code_fn(halted_async_exc_kind_w, irq_accept_level_w);
+									exc_restore_pc_q <= {pc_q[31:1], 1'b0};
+									state_q <= STATE_EXC_ENTER;
+								end
+							end
+
+							STATE_FATAL_IDLE: begin
 							end
 
 							STATE_CACHE_CLEAR: begin
@@ -4297,45 +4416,10 @@ module NECv810
 												bs_search_step_w,
 												bs_search_bit_q,
 												bs_down_q);
-											if (!bs_search_found_v &&
-												(((bs_search_partial_len_w != 32'd0) && (bs_search_resume_cycles_w == 6'd0)) ||
-												 ((bs_search_partial_len_w == 32'd0) &&
-												  (bs_search_complete_cycles_fn(bs_total_words_q, bs_down_q, siz16b_q, 1'b0, 5'd0) == 6'd0)))) begin
-												// A zero-tail miss advances the fixed full-step checkpoint directly.
-												bs_search_next_addr_v = bs_search_addr_advance_fn(bs_src_addr_q, bs_src_ofs_q, bs_search_step_w, bs_down_q);
-												bs_search_next_ofs_v = bs_search_ofs_advance_fn(bs_src_ofs_q, bs_search_step_w, bs_down_q);
-												bs_src_addr_q <= bs_search_next_addr_v;
-												bs_src_ofs_q <= bs_search_next_ofs_v;
-												bs_len_q <= bs_search_partial_len_w;
-												bs_search_count_q <= bs_search_count_q + {26'd0, bs_search_step_w};
-												request_psw_write_task(PSW_Z_MASK, PSW_Z_MASK);
-												if (bs_search_partial_len_w != 32'd0) begin
-													bs_seq_active_q <= 1'b1;
-													bs_word_index_q <= bs_word_index_q + 32'd1;
-													bs_wait_action_q <= BSWAIT_RESUME;
-													bs_cycles_q <= 6'd0;
-													state_q <= T2_PINS ? STATE_PIPE_ISSUE : STATE_LOOKUP_CUR_REQ;
-												end else begin
-													bs_seq_active_q <= 1'b0;
-													bs_wait_action_q <= BSWAIT_RETIRE;
-													bs_cycles_q <= 6'd0;
-													// Publish the computed checkpoint on this retire edge.
-													request_gpr_write_task(5'd30, bs_search_next_addr_v);
-													request_gpr_write_task(5'd29, bs_search_count_q + {26'd0, bs_search_step_w});
-													request_gpr_write_task(5'd28, bs_search_partial_len_w);
-													request_gpr_write_task(5'd27, {27'd0, bs_search_next_ofs_v});
-													retire_trace_task(6'd0, WB_PRODUCER_BS_GROUP,
-														1'b0, 1'b1, 2'd0);
-													update_retire_history_task(RETIRE_CLASS_LONG, SIZE_W, 1'b0);
-													fetch_defer_q <= 1'b1;
-													pc_q <= exec_seq_pc_q;
-													state_q <= fetch_restart_state_w;
-												end
-											end else if (bs_search_found_v) begin
+											if (bs_search_found_v) begin
 												state_q <= STATE_BS_SEARCH_SCAN;
 											end else begin
-												bs_search_result_q <= {1'b0, bs_search_step_w};
-												state_q <= STATE_BS_SEARCH_COMMIT;
+												bitstr_search_commit_task(1'b0, bs_search_step_w);
 											end
 										end else begin
 											bs_src_hi_q <= 32'd0;
@@ -4361,52 +4445,7 @@ module NECv810
 							end
 
 							STATE_BS_SEARCH_COMMIT: begin
-								// Use the registered search result and adjust the existing timing tail.
-								bs_search_result_v = bs_search_result_q;
-								bs_search_found_v = bs_search_result_v[6];
-								bs_search_skip_v = bs_search_result_v[5:0];
-								bs_search_advance_v = bs_search_found_v ? (bs_search_skip_v + 6'd1) : bs_search_step_w;
-								bs_search_next_addr_v = bs_search_addr_advance_fn(bs_src_addr_q, bs_src_ofs_q, bs_search_advance_v, bs_down_q);
-								bs_search_next_ofs_v = bs_search_ofs_advance_fn(bs_src_ofs_q, bs_search_advance_v, bs_down_q);
-								bs_search_next_len_v = bs_len_q - {26'd0, bs_search_advance_v};
-								bs_src_addr_q <= bs_search_next_addr_v;
-								bs_src_ofs_q <= bs_search_next_ofs_v;
-								bs_len_q <= bs_search_next_len_v;
-								if (bs_search_found_v) begin
-									bs_search_count_q <= bs_search_count_q + {26'd0, bs_search_skip_v};
-									request_psw_write_task(PSW_Z_MASK, 32'd0);
-									bs_seq_active_q <= 1'b0;
-									bs_wait_action_q <= BSWAIT_RETIRE;
-									bs_search_tail_v = bs_search_complete_cycles_fn(
-										bs_total_words_q,
-										bs_down_q,
-										siz16b_q,
-										1'b1,
-										bs_search_skip_v[4:0]);
-									bs_cycles_q <= bs_search_tail_v - 6'd2;
-									state_q <= STATE_BS_TIMING_WAIT;
-								end else begin
-									bs_search_count_q <= bs_search_count_q + {26'd0, bs_search_step_w};
-									request_psw_write_task(PSW_Z_MASK, PSW_Z_MASK);
-									if (bs_search_partial_len_w != 32'd0) begin
-										bs_seq_active_q <= 1'b1;
-										bs_word_index_q <= bs_word_index_q + 32'd1;
-										bs_wait_action_q <= BSWAIT_RESUME;
-										bs_cycles_q <= bs_search_resume_cycles_w - 6'd1;
-										state_q <= STATE_BS_TIMING_WAIT;
-									end else begin
-										bs_seq_active_q <= 1'b0;
-										bs_wait_action_q <= BSWAIT_RETIRE;
-										bs_search_tail_v = bs_search_complete_cycles_fn(
-											bs_total_words_q,
-											bs_down_q,
-											siz16b_q,
-											1'b0,
-											bs_search_skip_v[4:0]);
-										bs_cycles_q <= bs_search_tail_v - 6'd1;
-										state_q <= STATE_BS_TIMING_WAIT;
-									end
-								end
+								bitstr_search_commit_task(bs_search_result_q[6], bs_search_result_q[5:0]);
 							end
 
 							STATE_BS_DST_REQ: begin
@@ -4449,29 +4488,26 @@ module NECv810
 									if (bs_next_len_w != 32'd0) begin
 										bs_word_index_q <= bs_word_index_q + 32'd1;
 									end
-									bs_wait_action_q <= (bs_next_len_w == 32'd0) ? BSWAIT_RETIRE : BSWAIT_RESUME;
-									bs_cycles_q <= (bs_post_cycles_w == 6'd0) ? 6'd1 : bs_post_cycles_w;
+									bs_wait_action_q <= (bs_next_len_w == 32'd0) ? BSWAIT_RETIRE : BSWAIT_NEXT;
 									state_q <= STATE_BS_TIMING_WAIT;
-									if (bs_nec_w) begin
-										// Keep the source word that the next step still needs.
-										if (bs_src_sum_w[5] && bs_need_src_hi_q) begin
-											bs_src_lo_q <= bs_src_hi_q;
-										end
-										bs_need_src_hi_q <= bs_next_need_hi_w;
-										bs_src_second_q <= bs_next_lo_valid_w;
-										bs_next_src_q <= bs_next_src_read_w;
-										if (bs_next_len_w == 32'd0) begin
-											bs_cycles_q <= (bs_budget_pad_w ? bs_budget_after_w[5:0] : 6'd0) + 6'd1;
-										end else if (bs_budget_pad_w) begin
-											bs_wait_action_q <= BSWAIT_NEXT;
-											bs_cycles_q <= bs_budget_after_w[5:0];
-										end else begin
-											bs_budget_q <= bs_budget_after_w + $signed({1'b0, bs_nec_step_cycles_fn(bs_type_q,
-												bs_word_index_q + 32'd1, bs_total_words_q,
-												bs_dst_more_q, bs_dst_fewer_q, siz16b_q)});
-											bs_step_first_q <= 1'b1;
-											state_q <= bs_next_src_read_w ? STATE_BS_SRC_REQ : STATE_BS_DST_REQ;
-										end
+									// Keep the source word that the next step still needs.
+									if (bs_src_sum_w[5] && bs_need_src_hi_q) begin
+										bs_src_lo_q <= bs_src_hi_q;
+									end
+									bs_need_src_hi_q <= bs_next_need_hi_w;
+									bs_src_second_q <= bs_next_lo_valid_w;
+									bs_next_src_q <= bs_next_src_read_w;
+									if (bs_next_len_w == 32'd0) begin
+										bs_cycles_q <= (bs_budget_pad_w ? bs_budget_after_w[5:0] : 6'd0) + 6'd1;
+									end else if (bs_budget_pad_w) begin
+										bs_wait_action_q <= BSWAIT_NEXT;
+										bs_cycles_q <= bs_budget_after_w[5:0];
+									end else begin
+										bs_budget_q <= bs_budget_after_w + $signed({1'b0, bs_arith_step_cycles_fn(bs_type_q,
+											bs_word_index_q + 32'd1, bs_total_words_q,
+											bs_dst_more_q, bs_dst_fewer_q, siz16b_q)});
+										bs_step_first_q <= 1'b1;
+										state_q <= bs_next_src_read_w ? STATE_BS_SRC_REQ : STATE_BS_DST_REQ;
 									end
 								end
 							end
@@ -4488,18 +4524,15 @@ module NECv810
 											state_q <= STATE_EXC_ENTER;
 										end else begin
 											case (bs_wait_action_q)
-												BSWAIT_START: state_q <= STATE_BS_SRC_REQ;
 												BSWAIT_NEXT: begin
-													bs_budget_q <= {1'b0, bs_nec_step_cycles_fn(bs_type_q,
+													bs_budget_q <= bs_search_q ? $signed(bs_search_step_cycles_fn(
+														bs_first_partial_q, bs_last_partial_q, bs_down_q,
+														bs_total_words_q, bs_word_index_q, siz16b_q)) :
+														$signed({1'b0, bs_arith_step_cycles_fn(bs_type_q,
 														bs_word_index_q, bs_total_words_q,
-														bs_dst_more_q, bs_dst_fewer_q, siz16b_q)};
+														bs_dst_more_q, bs_dst_fewer_q, siz16b_q)});
 													bs_step_first_q <= 1'b1;
 													state_q <= bs_next_src_q ? STATE_BS_SRC_REQ : STATE_BS_DST_REQ;
-												end
-												// Resume through normal fetch so pending interrupts see a boundary.
-												BSWAIT_RESUME: begin
-													fetch_defer_q <= 1'b1;
-													state_q <= fetch_restart_state_w;
 												end
 												default: begin
 													publish_bitstr_checkpoint_task();
@@ -4621,7 +4654,11 @@ module NECv810
 											end
 
 											TIMING_TRAP: begin
-												// Enter the exception after the TRAP timing wait.
+												if (abort_async_exc_kind_w != ASYNC_EXC_NONE) begin
+													exc_code_q <= async_exception_code_fn(
+														abort_async_exc_kind_w, irq_accept_level_w);
+													exc_restore_pc_q <= {exec_seq_pc_q[31:1], 1'b0};
+												end
 												state_q <= STATE_EXC_ENTER;
 											end
 
@@ -4710,7 +4747,7 @@ module NECv810
 
 							STATE_SAVESTATE_HOLD: begin
 								if (!savestate_pause_req_i) begin
-									state_q <= fetch_restart_state_w;
+									state_q <= fatal_q ? STATE_FATAL_IDLE : halted_q ? STATE_HALT_IDLE : fetch_restart_state_w;
 									invalidate_line_window_task;
 									phi1_seen_q <= 1'b0;
 								end
@@ -5190,7 +5227,7 @@ module NECv810
 			end else begin
 				src_words_v = bs_word_count_fn(len, src_ofs);
 				dst_words_v = bs_word_count_fn(len, dst_ofs);
-				if ((src_addr == dst_addr) && (src_words_v == 32'd1) && (dst_words_v == 32'd1) && (src_ofs > dst_ofs)) begin
+				if ((src_addr[31:2] == dst_addr[31:2]) && (src_words_v == 32'd1) && (dst_words_v == 32'd1) && (src_ofs > dst_ofs)) begin
 					bs_arith_type_fn = BS_TYPE7;
 				end else if (src_ofs == dst_ofs) begin
 					end_sum_v = {1'b0, src_ofs} + len[5:0];
@@ -5204,22 +5241,6 @@ module NECv810
 		end
 	endfunction
 
-	function [5:0] bs_arith_start_cycles_fn;
-		input [2:0] bs_type;
-		input       siz16b;
-		begin
-			// Adjust waits so complete bit-string timing matches NEC table 5-13.
-			case (bs_type)
-				BS_TYPE1: bs_arith_start_cycles_fn = siz16b ? 6'd27 : 6'd24;
-				BS_TYPE2: bs_arith_start_cycles_fn = siz16b ? 6'd27 : 6'd24;
-				BS_TYPE3: bs_arith_start_cycles_fn = siz16b ? 6'd32 : 6'd29;
-				BS_TYPE4: bs_arith_start_cycles_fn = siz16b ? 6'd30 : 6'd31;
-				BS_TYPE5: bs_arith_start_cycles_fn = siz16b ? 6'd27 : 6'd24;
-				BS_TYPE7: bs_arith_start_cycles_fn = siz16b ? 6'd32 : 6'd29;
-				default:  bs_arith_start_cycles_fn = siz16b ? 6'd19 : 6'd13;
-			endcase
-		end
-	endfunction
 
 	function [5:0] bs_arith_zero_cycles_fn;
 		input [2:0] bs_type;
@@ -5233,35 +5254,6 @@ module NECv810
 		end
 	endfunction
 
-	function [5:0] bs_arith_resume_cycles_fn;
-		input [2:0]  bs_type;
-		input [31:0] total_words;
-		input [31:0] word_index;
-		input        siz16b;
-		begin
-			if (total_words <= word_index) begin
-				bs_arith_resume_cycles_fn = 6'd0;
-			end else if (word_index == 32'd1) begin
-				case (bs_type)
-					BS_TYPE1: bs_arith_resume_cycles_fn = siz16b ? 6'd12 : 6'd6;
-					BS_TYPE2: bs_arith_resume_cycles_fn = siz16b ? 6'd14 : 6'd7;
-					BS_TYPE3,
-					BS_TYPE5: bs_arith_resume_cycles_fn = siz16b ? 6'd16 : 6'd8;
-					BS_TYPE4: bs_arith_resume_cycles_fn = siz16b ? 6'd6 : 6'd3;
-					default:  bs_arith_resume_cycles_fn = 6'd0;
-				endcase
-			end else begin
-				case (bs_type)
-					BS_TYPE1,
-					BS_TYPE2: bs_arith_resume_cycles_fn = siz16b ? 6'd8 : 6'd4;
-					BS_TYPE3,
-					BS_TYPE4: bs_arith_resume_cycles_fn = siz16b ? 6'd4 : 6'd2;
-					BS_TYPE5: bs_arith_resume_cycles_fn = siz16b ? 6'd6 : 6'd3;
-					default:  bs_arith_resume_cycles_fn = 6'd0;
-				endcase
-			end
-		end
-	endfunction
 
 	// NEC Table 5-13 clocks for word step k of an arithmetic bit string; step 1
 	// also carries the instruction overhead. Steps follow destination words,
@@ -5269,7 +5261,7 @@ module NECv810
 	// steady step's clocks from step 1 to the extra step, and one word shorter
 	// gives its last step the clocks of two. The 16-bit TYPE4 multiword row is
 	// printed as 6N+36 (below its own two-word value) and is taken as 12N+36.
-	function [7:0] bs_nec_step_cycles_fn;
+	function [7:0] bs_arith_step_cycles_fn;
 		input [2:0]  bs_type;
 		input [31:0] step;
 		input [31:0] src_words;
@@ -5291,19 +5283,19 @@ module NECv810
 				default:  begin first_v = siz16b ? 8'd43 : 8'd37; second_v = 8'd0; third_v = 8'd0; end
 			endcase
 			if (dst_more && (step > src_words)) begin
-				bs_nec_step_cycles_fn = steady_v;
+				bs_arith_step_cycles_fn = steady_v;
 			end else begin
-				bs_nec_step_cycles_fn =
-					bs_nec_table_step_fn(step, first_v - BS_NEC_OVERHEAD -
+				bs_arith_step_cycles_fn =
+					bs_arith_table_step_fn(step, first_v - BS_ARITH_OVERHEAD -
 						(dst_more ? steady_v : 8'd0), second_v, third_v, steady_v) +
 					((dst_fewer && (step + 32'd1 == src_words)) ?
-						bs_nec_table_step_fn(src_words, first_v, second_v, third_v, steady_v) :
+						bs_arith_table_step_fn(src_words, first_v, second_v, third_v, steady_v) :
 						8'd0);
 			end
 		end
 	endfunction
 
-	function [7:0] bs_nec_table_step_fn;
+	function [7:0] bs_arith_table_step_fn;
 		input [31:0] step;
 		input [7:0]  first;
 		input [7:0]  second;
@@ -5311,13 +5303,99 @@ module NECv810
 		input [7:0]  steady;
 		begin
 			if (step == 32'd1) begin
-				bs_nec_table_step_fn = first;
+				bs_arith_table_step_fn = first;
 			end else if (step == 32'd2) begin
-				bs_nec_table_step_fn = second;
+				bs_arith_table_step_fn = second;
 			end else if (step == 32'd3) begin
-				bs_nec_table_step_fn = third;
+				bs_arith_table_step_fn = third;
 			end else begin
-				bs_nec_table_step_fn = steady;
+				bs_arith_table_step_fn = steady;
+			end
+		end
+	endfunction
+
+	// Table 5-12: first/second hits, interior constant, final hit/miss,
+	// then the distinct two-word hit/miss entries. Columns follow search order.
+	function [55:0] bs_search_profile_fn;
+		input first_partial;
+		input last_partial;
+		input down;
+		begin
+			if (down) begin
+				case ({first_partial, last_partial})
+					2'b10: bs_search_profile_fn = {8'd31,8'd55,8'd49,8'd49,8'd43,8'd48,8'd50};
+					2'b11: bs_search_profile_fn = {8'd31,8'd55,8'd49,8'd51,8'd50,8'd48,8'd50};
+					2'b01: bs_search_profile_fn = {8'd43,8'd46,8'd40,8'd42,8'd41,8'd48,8'd47};
+					default: bs_search_profile_fn = {8'd43,8'd46,8'd40,8'd40,8'd34,8'd46,8'd40};
+				endcase
+			end else begin
+				case ({first_partial, last_partial})
+					2'b01: bs_search_profile_fn = {8'd38,8'd41,8'd35,8'd33,8'd34,8'd39,8'd40};
+					2'b11: bs_search_profile_fn = {8'd28,8'd52,8'd46,8'd44,8'd45,8'd47,8'd47};
+					2'b10: bs_search_profile_fn = {8'd28,8'd52,8'd46,8'd46,8'd40,8'd52,8'd46};
+					default: bs_search_profile_fn = {8'd38,8'd41,8'd35,8'd35,8'd29,8'd41,8'd35};
+				endcase
+			end
+		end
+	endfunction
+
+	// Miss checkpoints leave six clocks for a possible hit's encoder and tail.
+	// The last step uses the smaller completion count; its tail supplies the rest.
+	function [8:0] bs_search_step_cycles_fn;
+		input first_partial;
+		input last_partial;
+		input down;
+		input [31:0] total_words;
+		input [31:0] step;
+		input siz16b;
+		reg [55:0] profile_v;
+		reg [8:0] first_v, second_v, interior_v, last_hit_v, last_miss_v;
+		reg [8:0] two_hit_v, two_miss_v, minimum_v, cycles_v;
+		begin
+			profile_v = bs_search_profile_fn(first_partial, last_partial, down);
+			first_v = {1'b0, profile_v[55:48]};
+			second_v = {1'b0, profile_v[47:40]};
+			interior_v = {1'b0, profile_v[39:32]};
+			last_hit_v = {1'b0, profile_v[31:24]};
+			last_miss_v = {1'b0, profile_v[23:16]};
+			two_hit_v = {1'b0, profile_v[15:8]};
+			two_miss_v = {1'b0, profile_v[7:0]};
+			minimum_v = (last_hit_v < last_miss_v) ? last_hit_v : last_miss_v;
+			if (total_words == 32'd1) begin
+				cycles_v = down ? 9'd24 : 9'd27;
+			end else if (step == 32'd1) begin
+				cycles_v = first_v - 9'd8;
+			end else if (total_words == 32'd2) begin
+				cycles_v = ((two_hit_v < two_miss_v) ? two_hit_v : two_miss_v) - first_v + 9'd6;
+			end else begin
+				cycles_v = (step == 32'd2) ? (second_v - first_v) :
+					(step == 32'd3) ? (9'd9 + interior_v - second_v) : 9'd3;
+				if (step == total_words) cycles_v = cycles_v + minimum_v - interior_v + 9'd6;
+			end
+			bs_search_step_cycles_fn = cycles_v + (siz16b ? 9'd2 : 9'd0);
+		end
+	endfunction
+
+	function [7:0] bs_search_tail_cycles_fn;
+		input first_partial;
+		input last_partial;
+		input down;
+		input [31:0] total_words;
+		input [31:0] step;
+		input found;
+		reg [55:0] profile_v;
+		reg [7:0] hit_v, miss_v, minimum_v;
+		begin
+			profile_v = bs_search_profile_fn(first_partial, last_partial, down);
+			if (total_words == 32'd1) begin
+				bs_search_tail_cycles_fn = (down && !found) ? 8'd2 : 8'd0;
+			end else if (step != total_words) begin
+				bs_search_tail_cycles_fn = 8'd6;
+			end else begin
+				hit_v = (total_words == 32'd2) ? profile_v[15:8] : profile_v[31:24];
+				miss_v = (total_words == 32'd2) ? profile_v[7:0] : profile_v[23:16];
+				minimum_v = (hit_v < miss_v) ? hit_v : miss_v;
+				bs_search_tail_cycles_fn = (found ? hit_v : miss_v) - minimum_v;
 			end
 		end
 	endfunction
@@ -5329,65 +5407,8 @@ module NECv810
 		end
 	endfunction
 
-	function [5:0] bs_search_start_cycles_fn;
-		input [31:0] total_words;
-		input        first_partial;
-		input        down;
-		begin
-			// Search startup timing depends on direction and first-word alignment.
-			if (total_words <= 32'd1) begin
-				bs_search_start_cycles_fn = down ? 6'd25 : 6'd28;
-			end else if (down) begin
-				bs_search_start_cycles_fn = first_partial ? 6'd30 : 6'd42;
-			end else begin
-				bs_search_start_cycles_fn = first_partial ? 6'd27 : 6'd37;
-			end
-		end
-	endfunction
 
-	function [5:0] bs_search_resume_cycles_fn;
-		input        first_partial;
-		input        last_partial;
-		input        down;
-		input [31:0] total_words;
-		input [31:0] word_index;
-		input        siz16b;
-		begin
-			if ((total_words <= 32'd1) || (total_words <= word_index)) begin
-				bs_search_resume_cycles_fn = 6'd0;
-			end else if (word_index == 32'd1) begin
-				bs_search_resume_cycles_fn = first_partial ?
-					(siz16b ? 6'd29 : 6'd23) :
-					(siz16b ? 6'd4 : 6'd2);
-			end else if ((word_index + 32'd1) == total_words) begin
-				if (down) begin
-					bs_search_resume_cycles_fn = last_partial ? 6'd0 : (siz16b ? 6'd4 : 6'd2);
-				end else begin
-					bs_search_resume_cycles_fn = last_partial ? (siz16b ? 6'd4 : 6'd2) : 6'd0;
-				end
-			end else begin
-				bs_search_resume_cycles_fn = siz16b ? 6'd4 : 6'd2;
-			end
-		end
-	endfunction
 
-	function [5:0] bs_search_complete_cycles_fn;
-		input [31:0] total_words;
-		input        down;
-		input        siz16b;
-		input        found;
-		input [4:0]  skip_bits;
-		begin
-			if (found) begin
-				bs_search_complete_cycles_fn =
-					(siz16b ? 6'd5 : 6'd3) + {1'b0, skip_bits[4:1]};
-			end else if ((total_words == 32'd1) && down) begin
-				bs_search_complete_cycles_fn = siz16b ? 6'd4 : 6'd2;
-			end else begin
-				bs_search_complete_cycles_fn = 6'd0;
-			end
-		end
-	endfunction
 
 	function [31:0] bs_search_ordered_word_fn;
 		input [31:0] word;

@@ -18,7 +18,8 @@ package pcfx_cd_pkg;
 	// Mechanism, slow ticks
 	localparam logic [19:0] M_SPINUP  = 20'd160500; // 1.82 s from reset or a new disc
 	localparam logic [19:0] M_NODISC  = 20'd532300; // 6.04 s looking for a disc that is not there
-	localparam logic [15:0] M_SEEK0   = 16'd9700;   // seek: 110 ms, plus 2 ticks (22.7 us) a sector
+	localparam logic [15:0] M_SEEK0   = 16'd9700;   // 110 ms local overhead
+	localparam logic [18:0] M_SEEK_LOCAL = 19'd12000;
 	localparam logic [7:0]  M_RA_MAX  = 8'd100;     // sectors the read-ahead buffer holds
 	localparam logic [4:0]  M_THRU    = 5'd16;      // forward gap read through, not sought
 
@@ -68,12 +69,29 @@ package pcfx_cd_pkg;
 	localparam logic [3:0] MO_STOP   = 4'd8;   // audio stops
 	localparam logic [3:0] MO_ABORT  = 4'd9;   // message out: reading and audio stop
 	localparam logic [3:0] MO_FLUSH  = 4'd10;  // read-ahead dropped (new data format)
+	localparam logic [3:0] MO_REZERO = 4'd11;  // stop and home
 
 	// Play states as READ SUBCODE-Q reports them
 	localparam logic [1:0] PS_PLAY   = 2'd0;
 	localparam logic [1:0] PS_STILL  = 2'd1;
 	localparam logic [1:0] PS_SEARCH = 2'd2;
 	localparam logic [1:0] PS_STOP   = 2'd3;
+
+	typedef struct packed {
+		logic        p0e_immed, p0e_b3;
+		logic [1:0]  p0e_sel0, p0e_sel1;
+		logic [31:0] p28;
+		logic [7:0]  p29;
+		logic [15:0] p2a;
+		logic [7:0]  p2b;
+		logic [7:0]  vflags;
+		logic [7:0]  vrecovery;
+		logic [3:0]  vretry;
+		logic [7:0]  density;
+		logic [11:0] block_len;
+		logic        custom;
+		logic        p28_applied;
+	} scsi_mode_t;
 
 	typedef struct packed {
 		logic [3:0]  ph;        // bus state
@@ -99,19 +117,22 @@ package pcfx_cd_pkg;
 		logic [18:0] tgt, tgt2; // addresses for the mechanism
 		logic [3:0]  mop;
 		logic [2:0]  mmode;
-		logic [15:0] scnt;      // sectors left to build
-		logic [10:0] sk;        // next sector byte to build
-		logic [10:0] ck;        // sector bytes sent
+		logic [23:0] scnt;      // sectors left to build
+		logic [11:0] sk;        // next sector byte to build
 		logic        mode2;
-		logic        sec_on;
+		logic [1:0]  sec_init;
+		logic [11:0] sect_src;
+		logic [11:0] sect_len;
 		logic        sfirst;    // still the command's first sector
 		logic        waited;    // the first sector came off the disc
 		logic [7:0]  nb;        // next byte
 		logic        nbv;
 		logic        nb_first;  // it starts a sector
+		logic        nb_last;
 		logic        pdone;
 		logic [7:0]  dbo;
 		logic        dbv;
+		logic        db_last;
 		logic        dfirst;    // nothing sent yet in this phase
 		logic [3:0]  sense;
 		logic [1:0]  ua;        // 1 reset, 2 disc changed
@@ -120,12 +141,8 @@ package pcfx_cd_pkg;
 		logic [6:0]  cv_m;
 		logic [5:0]  cv_s;
 		logic        cv_busy;
-		logic        p0e_immed, p0e_b3;
-		logic [1:0]  p0e_sel0, p0e_sel1;
-		logic [31:0] p28;
-		logic [7:0]  p29;
-		logic [15:0] p2a;
-		logic [7:0]  p2b;
+		scsi_mode_t  mode;
+		scsi_mode_t  ml_mode;
 		logic [7:0]  ml_left;   // MODE SELECT list bytes to come
 		logic [2:0]  ml_st;
 		logic [7:0]  ml_n;
@@ -133,6 +150,10 @@ package pcfx_cd_pkg;
 		logic [7:0]  ml_i;
 		logic        ml_err;
 		logic        ml_bd;     // a block descriptor came: the buffer is dropped
+		logic [1:0]  msg_return;
+		logic        m_go;
+		logic        p_next;
+		logic        bus_rst;
 	} scsi_t;
 
 	typedef struct packed {
@@ -154,6 +175,7 @@ package pcfx_cd_pkg;
 		logic        resume;    // the hit found the head looping
 		logic        op_pend;
 		logic        obusy;
+		logic        done;
 		logic        wait_arr;  // the op is done on arrival
 		logic [3:0]  err;
 		logic [3:0]  q_ctrl;    // Q of the head, BCD
@@ -161,6 +183,10 @@ package pcfx_cd_pkg;
 		logic        q_idx;
 		logic [23:0] q_rel, q_abs;
 		logic        q_pend;    // head moved: Q to rebuild
+		logic [18:0] rd_limit;
+		logic        rd_valid;
+		logic        toc_pend;
+		logic        f_start;
 	} mech_t;
 
 	typedef struct packed {

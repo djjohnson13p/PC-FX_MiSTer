@@ -80,10 +80,55 @@ import pcfx_cd_pkg::*;
 
 scsi_t st;
 
+function automatic scsi_mode_t mode_defaults();
+	scsi_mode_t m;
+	begin
+		m = '0;
+		m.p0e_immed = 1'b1;
+		m.p0e_sel0  = 2'd1;
+		m.p0e_sel1  = 2'd2;
+		m.p2a       = 16'h0011;
+		m.vretry    = 4'hF;
+		m.block_len = 12'd2048;
+		mode_defaults = m;
+	end
+endfunction
+
+function automatic logic descriptor_valid(input logic [7:0] density, input logic [11:0] n);
+	begin
+		descriptor_valid = density == 8'h00 ? (n == 12'd2048 || n == 12'd2336 || n == 12'd2340) :
+		                   density == 8'h81 && (n == 12'd2048 || n == 12'd2056 || n == 12'd2324 ||
+		                   n == 12'd2332 || n == 12'd2336 || n == 12'd2340);
+	end
+endfunction
+
+function automatic logic [11:0] vendor_size(input logic [3:0] flags, input logic mode2, input logic form2);
+	begin
+		case (flags[1:0])
+		2'd2: vendor_size = 12'd2336;
+		2'd3: vendor_size = 12'd2340;
+		default: begin
+			if (!flags[3]) vendor_size = flags[0] && mode2 ? 12'd2336 : 12'd2048;
+			else if (flags[0] && form2) vendor_size = flags[2] ? 12'd2324 : 12'd2332;
+			else vendor_size = flags[2] ? 12'd2048 : 12'd2056;
+		end
+		endcase
+	end
+endfunction
+
+function automatic logic [11:0] descriptor_source(input logic [7:0] density, input logic [11:0] n);
+	begin
+		if (n == 12'd2340) descriptor_source = 12'd12;
+		else if (density == 8'h81 && (n == 12'd2048 || n == 12'd2324)) descriptor_source = 12'd24;
+		else descriptor_source = 12'd16;
+	end
+endfunction
+
 // ---- bus states ----
 localparam logic [3:0] F_FREE = 4'd0, F_SELW = 4'd1, F_SELD = 4'd2, F_CMD = 4'd3, F_EXEC = 4'd4,
                        F_DIN = 4'd5, F_DOUT = 4'd6, F_STAT = 4'd7, F_MIN = 4'd8, F_MOUT = 4'd9,
                        F_HOLD = 4'd10, F_ATN = 4'd11, F_DROP = 4'd12;
+localparam logic [1:0] M_NONE = 2'd0, M_CMD = 2'd1, M_DOUT = 2'd2, M_STAT = 2'd3;
 
 // phase lines {MSG, C/D, I/O}
 localparam logic [2:0] L_DOUT = 3'b000, L_DIN = 3'b001, L_CMD = 3'b010, L_STAT = 3'b011,
@@ -187,7 +232,9 @@ wire [7:0] c10 = st.cdb[15:8];
 
 wire [3:0] cdb_len = op[7:5] == 3'd0 ? 4'd6 : op[7:5] == 3'd5 ? 4'd12 : 4'd10;
 
-wire known = op == 8'h00 || op == 8'h01 || op == 8'h03 || op == 8'h08 || op == 8'h0B || op == 8'h0D ||
+wire verify_zero = st.mode.density == 8'h00 &&
+                   ((op == 8'h2F && {c7, c8} == 16'd0) || (op == 8'hAF && {c6, c7, c8, c9} == 32'd0));
+wire known = verify_zero || op == 8'h00 || op == 8'h01 || op == 8'h03 || op == 8'h08 || op == 8'h0B || op == 8'h0D ||
              op == 8'h12 || op == 8'h15 || op == 8'h1A || op == 8'h1B || op == 8'h1E || op == 8'h25 ||
              op == 8'h28 || op == 8'h2B || op == 8'h34 || op == 8'h42 || op == 8'h43 || op == 8'h44 ||
              op == 8'h45 || op == 8'h47 || op == 8'h48 || op == 8'h49 || op == 8'h4B || op == 8'hA5 ||
@@ -232,7 +279,7 @@ function automatic logic [7:0] page_byte(input logic [69:0] s, input logic [4:0]
 	end
 endfunction
 
-wire [69:0] modes = {st.p0e_immed, st.p0e_b3, st.p0e_sel0, st.p0e_sel1, st.p28, st.p29, st.p2a, st.p2b};
+wire [69:0] modes = {st.mode.p0e_immed, st.mode.p0e_b3, st.mode.p0e_sel0, st.mode.p0e_sel1, st.mode.p28, st.mode.p29, st.mode.p2a, st.mode.p2b};
 wire [5:0] ms_page = c2[5:0];
 wire [1:0] ms_pc   = c2[7:6];
 wire       ms_dbd  = c1[3];
@@ -325,7 +372,8 @@ always_comb begin
 	R_INQ: hb = (i == 6'd0 && c1[7:5] != 3'd0) ? 8'h7F : inq_byte(i);
 	R_MSENSE: begin
 		if (ms_page == 6'd0)
-			hb = i == 6'd0 ? 8'h09 : i == 6'd2 ? 8'h80 : i == 6'd9 ? 8'h0F : 8'h00;
+			hb = i == 6'd0 ? 8'h09 : i == 6'd2 ? 8'h80 : i == 6'd4 ? st.mode.vflags :
+			     i == 6'd5 ? st.mode.vrecovery : i == 6'd9 ? {4'd0, st.mode.vretry} : 8'h00;
 		else if (i == 6'd0)
 			hb = 8'(st.len - 11'd1);
 		else if (i == 6'd3)
@@ -333,11 +381,14 @@ always_comb begin
 		else if (i >= ms_hdr)
 			hb = page_byte(modes, r, ms_pc);
 		else
-			hb = i == 6'd7 ? 8'h6E : i == 6'd10 ? 8'h08 : 8'h00;
+			hb = i == 6'd4 ? (ms_pc == 2'd0 ? st.mode.density : 8'h00) : i == 6'd7 ? 8'h6E :
+			     i == 6'd10 ? (ms_pc == 2'd0 ? {4'd0, st.mode.block_len[11:8]} : 8'h08) :
+			     i == 6'd11 && ms_pc == 2'd0 ? st.mode.block_len[7:0] : 8'h00;
 	end
 	R_CAP: case (i)
 		6'd0, 6'd1, 6'd2, 6'd3: hb = be32({1'b0, last_lba}, i[1:0]);
-		6'd6:                   hb = 8'h08;
+		6'd6:                   hb = {4'd0, capacity_len[11:8]};
+		6'd7:                   hb = capacity_len[7:0];
 		default: ;
 		endcase
 	R_HDR: case (i)
@@ -352,8 +403,8 @@ always_comb begin
 		6'd3: hb = {2'd0, sc_len} - 8'd4;
 		6'd4: hb = want_q ? sc_fmt : 8'h00;
 		6'd5: hb = sc_fmt == 8'd2 ? 8'h00 : {q_ca[3:0], q_ca[7:4]};
-		6'd6: hb = sc_fmt == 8'd3 ? c6 : sc_fmt == 8'd2 ? 8'h00 : q_tno;
-		6'd7: hb = sc_fmt <= 8'd1 ? q_idx : 8'h00;
+		6'd6: hb = sc_fmt == 8'd3 ? c6 : sc_fmt == 8'd2 ? 8'h00 : {1'b0, bin_o};
+		6'd7: hb = sc_fmt <= 8'd1 ? {1'b0, bin_o} : 8'h00;
 		6'd8, 6'd9, 6'd10, 6'd11:
 			if (sc_fmt > 8'd1)   hb = 8'h00;
 			else if (!c1[1])     hb = be32(st.xr, i[1:0]);
@@ -453,7 +504,8 @@ always_comb begin
 
 	case (st.pidx[3:0])
 	4'd5:          bin_in = st.e_m;
-	4'd6:          bin_in = st.e_s;
+	4'd6:          bin_in = st.rt == R_SUBCH ? q_tno : st.e_s;
+	4'd7:          bin_in = st.rt == R_SUBCH ? q_idx : st.e_f;
 	4'd9:          bin_in = q_abs[23:16];
 	4'd10:         bin_in = q_abs[15:8];
 	4'd11:         bin_in = q_abs[7:0];
@@ -465,21 +517,22 @@ always_comb begin
 end
 
 // reply length: what the initiator allows, or the whole reply if shorter
-reg [10:0] r_alloc, r_real;
+reg [15:0] r_alloc;
+reg [10:0] r_real;
 always_comb begin
-	r_alloc = {c7[2:0], c8};
+	r_alloc = {c7, c8};
 	r_real  = 11'd8;
 	case (op)
-	8'h03: begin r_alloc = c4 == 8'd0 ? 11'd4 : {3'd0, c4}; r_real = 11'd18; end
-	8'h12: begin r_alloc = {3'd0, c4}; r_real = 11'd36; end
-	8'h1A: begin r_alloc = {3'd0, c4}; r_real = ms_page == 6'd0 ? 11'd10 : {5'd0, ms_hdr} + {5'd0, ms_n}; end
+	8'h03: begin r_alloc = c4 == 8'd0 ? 16'd4 : {8'd0, c4}; r_real = 11'd18; end
+	8'h12: begin r_alloc = {8'd0, c4}; r_real = 11'd36; end
+	8'h1A: begin r_alloc = {8'd0, c4}; r_real = ms_page == 6'd0 ? 11'd10 : {5'd0, ms_hdr} + {5'd0, ms_n}; end
 	8'h42: r_real = {5'd0, sc_len};
 	8'h43: r_real = 11'd4 + ent_bytes;
-	8'hDD: begin r_alloc = {3'd0, c1}; r_real = 11'd10; end
+	8'hDD: begin r_alloc = {8'd0, c1}; r_real = 11'd10; end
 	default: ;
 	endcase
 end
-wire [10:0] r_len = r_alloc < r_real ? r_alloc : r_real;
+wire [10:0] r_len = r_alloc < {5'd0, r_real} ? r_alloc[10:0] : r_real;
 
 // ---- the controller ----
 
@@ -515,17 +568,21 @@ wire [6:0]  au_tr  = au_kind == A_BTRK ? bin(au_b[31:24]) : au_b[30:24];
 wire [18:0] rel19  = {c3[2:0], c4, c5};
 wire [18:0] tgt_sum;
 wire [18:0] len19  = op == 8'hA5 || op == 8'hA9 ? {c7[2:0], c8, c9} : {3'd0, c7, c8};
-wire [15:0] rcount = op == 8'h08 ? (c4 == 8'd0 ? 16'd256 : {8'd0, c4}) :
-                     op == 8'hA8 ? ((c6 != 8'd0 || c7 != 8'd0) ? 16'hFFFF : {c8, c9}) : {c7, c8};
+wire [23:0] rcount = op == 8'h08 ? (c4 == 8'd0 ? 24'd256 : {16'd0, c4}) :
+                     op == 8'hA8 ? {c7, c8, c9} : {8'd0, c7, c8};
 wire        is_read  = op == 8'h08 || op == 8'h28 || op == 8'hA8;
 wire        is_seek  = op == 8'h0B || op == 8'h2B || op == 8'h34;
 wire        is_play  = op == 8'h45 || op == 8'h47 || op == 8'h48 || op == 8'h49 || op == 8'hA5 || op == 8'hA9;
 wire        two_addr = op == 8'h47 || op == 8'h48;
 
 wire [15:0] ent_adr = TOC_BASE + {7'd0, st.trk - 7'd1, 2'b00} + {13'd0, st.fs};
-wire [15:0] sec_adr = p_base + (st.mode2 ? 16'd24 : 16'd16) + {5'd0, st.sk};
+wire [15:0] sec_adr = p_base + {4'd0, st.sect_src} + {4'd0, st.sk};
+wire [11:0] capacity_len = st.mode.custom ? st.mode.block_len : vendor_size({st.mode.vflags[7:6], st.mode.vflags[1:0]}, 1'b0, 1'b0);
+wire [11:0] custom_origin = st.mode.density == 8'h00 && st.mode.block_len == 12'd2048 ? 12'd16 : 12'd12;
+wire [11:0] ml_origin = st.ml_mode.density == 8'h00 && st.ml_mode.block_len == 12'd2048 ? 12'd16 : 12'd12;
 
 wire tick = st.dslow ? ce_t : ce_x;
+wire read_error = st.rt == R_SECT && (m_err != E_NONE || (st.xs == X_STAT && st.err != E_NONE));
 assign tgt_sum = st.tgt + (st.xs == X_ADD2 ? len19 : rel19);
 
 wire [15:0] e2s = st.rt == R_SECT ? (st.waited ? B_E2S_SK : B_E2S_RD) : op == 8'h03 ? B_E2S_RS : op == 8'h44 ? X_E2S_HD :
@@ -535,22 +592,20 @@ wire [15:0] s2m = st.dbo == 8'h02 ? B_S2M_RS : is_read ? B_S2M_RD : op == 8'h03 
 wire dly0 = st.dly == 16'd0;
 
 always_ff @(posedge clk) begin
-	m_go    <= 1'b0;
-	p_next  <= 1'b0;
-	bus_rst <= 1'b0;
 	if (reset) begin
 		st           <= '0;
 		st.ua        <= 2'd1;
-		st.p0e_immed <= 1'b1;
-		st.p0e_sel0  <= 2'd1;
-		st.p0e_sel1  <= 2'd2;
-		st.p2a       <= 16'h0011;
+		st.mode      <= mode_defaults();
 		mr_rq        <= 1'b0;
 	end else if (SAVESTATE && ss_shift) begin
 		st    <= scsi_t'({st[SCSI_BITS-2:0], ss_si});
 		mr_rq <= 1'b0;
 	end else if (ce) begin
-		st.rst_d <= rst;
+		// The receiver consumes each event on this enabled edge.
+		st.m_go    <= 1'b0;
+		st.p_next  <= 1'b0;
+		st.bus_rst <= 1'b0;
+		st.rst_d   <= rst;
 		if (tick && !dly0) st.dly <= st.dly - 16'd1;
 
 		// m2f: minutes and seconds counted onto the frames
@@ -573,16 +628,11 @@ always_ff @(posedge clk) begin
 			st.ph        <= F_FREE;
 			st.hs        <= 2'd0;
 			st.ua        <= 2'd1;
-			st.p0e_immed <= 1'b1;
-			st.p0e_b3    <= 1'b0;
-			st.p0e_sel0  <= 2'd1;
-			st.p0e_sel1  <= 2'd2;
-			st.p28       <= 32'd0;
-			st.p29       <= 8'd0;
-			st.p2a       <= 16'h0011;
-			st.p2b       <= 8'd0;
-			mr_rq        <= 1'b0;
-			bus_rst      <= !st.rst_d;
+			st.mode       <= mode_defaults();
+			st.ml_mode    <= '0;
+			st.msg_return <= M_NONE;
+			mr_rq         <= 1'b0;
+			st.bus_rst   <= !st.rst_d;
 		end else case (st.ph)
 
 		// ---- selection: our ID bit with SEL ----
@@ -604,6 +654,7 @@ always_ff @(posedge clk) begin
 			st.hs    <= 2'd0;
 			st.cdb_n <= 4'd0;
 			st.dly   <= B_CMD0;
+			st.msg_return <= atn ? M_CMD : M_NONE;
 		end
 
 		// ---- command bytes ----
@@ -612,6 +663,7 @@ always_ff @(posedge clk) begin
 				if (atn) begin
 					st.ph <= F_MOUT;
 					st.pl <= L_MOUT;
+					st.msg_return <= M_CMD;
 				end else if (dly0) begin
 					st.hs <= 2'd1;
 				end
@@ -649,13 +701,14 @@ always_ff @(posedge clk) begin
 		F_EXEC: begin
 			case (st.xs)
 			X_START: if (!(q_hold && q_busy)) begin
+				st.msg_return <= M_NONE;
 				st.dslow  <= 1'b1;
 				st.second <= 1'b0;
 				st.err    <= E_NONE;
 				st.dly    <= X_ERR;
 				st.xs     <= X_STAT;
 				if (op != 8'h03 && op != 8'h0D) st.sense <= E_NONE;
-				if (st.ua != 2'd0 && op != 8'h03 && op != 8'h12) begin
+				if (st.ua != 2'd0 && op != 8'h03 && op != 8'h0D && op != 8'h12) begin
 					st.err   <= st.ua == 2'd1 ? E_RESET : E_CHANGED;
 					st.sense <= st.ua == 2'd1 ? E_RESET : E_CHANGED;
 					st.ua    <= 2'd0;
@@ -670,7 +723,16 @@ always_ff @(posedge clk) begin
 					st.sense <= E_NOT_READY;
 				end else case (op)
 				8'h00: st.dly <= X_TUR;
+				8'h01: begin
+					st.mop <= MO_REZERO;
+					st.xs  <= X_MECH;
+				end
+				8'h2F, 8'hAF: st.xs <= X_STAT;
 				8'h03: begin
+					if (st.ua != 2'd0) begin
+						st.sense <= st.ua == 2'd1 ? E_RESET : E_CHANGED;
+						st.ua    <= 2'd0;
+					end
 					st.rt  <= R_SENSE;
 					st.len <= r_len;
 					st.dly <= X_SENSE;
@@ -684,12 +746,21 @@ always_ff @(posedge clk) begin
 				end
 				8'h15: begin
 					st.dly     <= X_MSEL;
-					st.ml_left <= c4;
+					st.ml_mode <= st.mode;
+					st.ml_left <= !c1[4] && c4 != 8'd0 ? 8'd10 : c4;
 					st.ml_st   <= 3'd0;
 					st.ml_n    <= 8'd0;
+					st.ml_i    <= 8'd0;
 					st.ml_err  <= 1'b0;
 					st.ml_bd   <= 1'b0;
 					st.xs      <= c4 == 8'd0 ? X_STAT : X_DOUT;
+					if (!c1[4] && c4 == 8'd0) begin
+						st.mode.vflags     <= 8'd0;
+						st.mode.vrecovery  <= 8'd0;
+						st.mode.vretry     <= 4'hF;
+						st.mode.custom     <= 1'b0;
+						st.mode.p28_applied <= 1'b0;
+					end
 				end
 				8'h1A: begin
 					st.rt  <= R_MSENSE;
@@ -708,8 +779,13 @@ always_ff @(posedge clk) begin
 					st.sense <= E_BAD_CDB;
 				end
 				8'h1B: begin
-					st.mop <= MO_STOP;
-					st.xs  <= c4[0] ? X_STAT : X_MECH;
+					if (c4[1]) begin
+						st.err   <= E_BAD_CDB;
+						st.sense <= E_BAD_CDB;
+					end else begin
+						st.mop <= MO_STOP;
+						st.xs  <= c4[0] ? X_STAT : X_MECH;
+					end
 				end
 				8'h25: begin
 					st.rt  <= R_CAP;
@@ -722,7 +798,8 @@ always_ff @(posedge clk) begin
 					st.rt  <= R_SUBCH;
 					st.len <= r_len;
 					st.dly <= X_MSENSE;
-					if (sc_fmt > 8'd3 || (sc_fmt == 8'd3 && (c6[6:0] < toc_first || c6 > {1'b0, toc_last}))) begin
+					if ((c2 & 8'hBF) != 8'd0 || sc_fmt > 8'd3 ||
+					    (sc_fmt == 8'd3 && (c6[6:0] < toc_first || c6 > {1'b0, toc_last}))) begin
 						st.err   <= E_BAD_PARAM;
 						st.sense <= E_BAD_PARAM;
 						st.dly   <= X_ERR;
@@ -830,12 +907,17 @@ always_ff @(posedge clk) begin
 					endcase
 				end
 				default: begin
-					// reads, seeks and plays go through the address unit
-					st.mop   <= is_read ? MO_READ : is_seek ? MO_SEEK : MO_PLAY;
-					st.mmode <= 3'd3;
-					st.dly   <= is_read || is_seek ? X_RD : X_AUDIO;
-					st.scnt  <= rcount;
-					if (is_read || is_seek || is_play) st.xs <= X_ADDR;
+					if ((op == 8'h28 && c1 != 8'd0) || (op == 8'hA8 && c6 != 8'd0)) begin
+						st.err   <= E_BAD_PARAM;
+						st.sense <= E_BAD_PARAM;
+					end else begin
+						// reads, seeks and plays go through the address unit
+						st.mop   <= is_read ? MO_READ : is_seek ? MO_SEEK : MO_PLAY;
+						st.mmode <= 3'd3;
+						st.dly   <= is_read || is_seek ? X_RD : X_AUDIO;
+						st.scnt  <= rcount;
+						if (is_read || is_seek || is_play) st.xs <= X_ADDR;
+					end
 				end
 				endcase
 			end
@@ -941,7 +1023,7 @@ always_ff @(posedge clk) begin
 
 			// ---- mechanism ----
 			X_MECH: begin
-				m_go  <= 1'b1;
+				st.m_go <= 1'b1;
 				st.xs <= X_MWAIT;
 			end
 			X_MWAIT: if (m_done) begin
@@ -950,7 +1032,7 @@ always_ff @(posedge clk) begin
 					st.sense <= op == 8'h44 ? (m_err == E_NOT_DATA ? E_HEADER : E_BAD_PARAM) : m_err;
 					st.xs    <= X_STAT;
 				end else if (is_read || op == 8'h44) begin
-					if (st.scnt == 16'd0 && is_read) begin
+					if (st.scnt == 24'd0 && is_read) begin
 						st.xs <= X_STAT;
 					end else begin
 						if (p_slow) st.dly <= X_RESUME;
@@ -967,7 +1049,11 @@ always_ff @(posedge clk) begin
 			end
 			// the first sector: the controller's time runs from when it is in
 			X_RWAIT: begin
-				if (p_eov) begin
+				if (m_err != E_NONE) begin
+					st.err   <= m_err;
+					st.sense <= m_err;
+					st.xs    <= X_STAT;
+				end else if (p_eov) begin
 					st.err   <= E_EOV;
 					st.sense <= E_EOV;
 					st.xs    <= X_STAT;
@@ -983,9 +1069,10 @@ always_ff @(posedge clk) begin
 						st.pl     <= L_DIN;
 						st.hs     <= 2'd0;
 						st.rt     <= R_SECT;
-						st.sec_on <= 1'b0;
-						st.sfirst <= 1'b1;
-						st.ck     <= 11'd0;
+						st.sec_init <= 2'd0;
+						st.sfirst   <= 1'b1;
+						st.nb_last  <= 1'b0;
+						st.db_last  <= 1'b0;
 						st.nbv    <= 1'b0;
 						st.dbv    <= 1'b0;
 						st.dfirst <= 1'b1;
@@ -1009,7 +1096,7 @@ always_ff @(posedge clk) begin
 					3'd2: st.e_f <= mr_q;
 					default: begin
 						st.e_c     <= mr_q;
-						p_next     <= 1'b1;
+						st.p_next  <= 1'b1;
 						st.cv      <= {12'd0, bin(st.e_f)};
 						st.cv_m    <= bin(st.e_m);
 						st.cv_s    <= sec_bin(st.e_s);
@@ -1092,43 +1179,95 @@ always_ff @(posedge clk) begin
 
 		// ---- data in: replies and sectors ----
 		F_DIN: begin
+			if (read_error) begin
+				if (st.err == E_NONE) begin
+					st.err   <= m_err;
+					st.sense <= m_err;
+				end
+				st.xs       <= X_STAT;
+				st.nbv      <= 1'b0;
+				st.dbv      <= 1'b0;
+				st.sec_init <= 2'd0;
+				st.pdone  <= 1'b1;
+				mr_rq     <= 1'b0;
 			// build the next byte
-			if (!st.nbv && !st.pdone) begin
+			end else if (!st.nbv && !st.pdone) begin
 				if (st.rt == R_SECT) begin
-					if (!st.sec_on) begin
-						if (st.scnt == 16'd0) begin
+					case (st.sec_init)
+					2'd0: begin
+						if (st.scnt == 24'd0) begin
 							st.pdone <= 1'b1;
 						end else if (p_eov) begin
 							st.err   <= E_EOV;
 							st.sense <= E_EOV;
 							st.pdone <= 1'b1;
-						end else if (p_ready) begin
-							if (!mr_rq) begin
-								mr_rq   <= 1'b1;
-								mr_addr <= p_base + 16'd15;
-							end else if (mr_ack) begin
-								mr_rq     <= 1'b0;
-								st.mode2  <= mr_q == 8'h02;
-								st.sec_on <= 1'b1;
-								st.sk     <= 11'd0;
+						end else if (p_ready && !mr_rq) begin
+							mr_rq   <= 1'b1;
+							mr_addr <= p_base + 16'd15;
+							st.sk   <= 12'd0;
+							st.sec_init <= 2'd1;
+							if (st.mode.custom) begin
+								st.sect_src <= st.mode.p28_applied ? custom_origin : descriptor_source(st.mode.density, st.mode.block_len);
+								st.sect_len <= st.mode.p28_applied ? st.mode.p28[11:0] : st.mode.block_len;
+							end else begin
+								st.sect_src <= st.mode.vflags[1:0] == 2'd3 ? 12'd12 :
+								               st.mode.vflags[1:0] == 2'd2 ? 12'd16 :
+								               st.mode.vflags[7:6] == 2'b11 ? 12'd24 : 12'd16;
+								st.sect_len <= vendor_size({st.mode.vflags[7:6], st.mode.vflags[1:0]}, 1'b0, 1'b0);
 							end
 						end
-					end else if (!mr_rq) begin
-						mr_rq   <= 1'b1;
-						mr_addr <= sec_adr;
-					end else if (mr_ack) begin
-						mr_rq       <= 1'b0;
-						st.nb       <= mr_q;
-						st.nbv      <= 1'b1;
-						st.nb_first <= st.sk == 11'd0 && !st.sfirst;
-						st.sk       <= st.sk + 11'd1;
-						if (st.sk == 11'd2047) begin
-							st.sec_on <= 1'b0;
-							st.sfirst <= 1'b0;
-							st.scnt   <= st.scnt - 16'd1;
-							p_next    <= 1'b1;
+					end
+					2'd1: begin
+						if (!mr_rq) begin
+							mr_rq   <= 1'b1;
+							mr_addr <= p_base + 16'd15;
+						end else if (mr_ack) begin
+							mr_rq   <= 1'b0;
+							st.mode2 <= mr_q == 8'h02;
+							if (!st.mode.custom && st.mode.vflags[1:0] == 2'd1) begin
+								if (st.mode.vflags[7] && mr_q == 8'h02) st.sec_init <= 2'd2;
+								else begin
+									st.sect_len <= vendor_size({st.mode.vflags[7:6], st.mode.vflags[1:0]}, mr_q == 8'h02, 1'b0);
+									st.sec_init <= 2'd3;
+								end
+							end else st.sec_init <= 2'd3;
 						end
 					end
+					2'd2: begin
+						if (!mr_rq) begin
+							mr_rq   <= 1'b1;
+							mr_addr <= p_base + 16'd20;
+						end else if (mr_ack) begin
+							mr_rq       <= 1'b0;
+							st.sect_len <= vendor_size({st.mode.vflags[7:6], st.mode.vflags[1:0]}, 1'b1, mr_q[5]);
+							st.sec_init <= 2'd3;
+						end
+					end
+					default: begin
+						if (st.sect_len == 12'd0) begin
+							st.sec_init <= 2'd0;
+							st.sfirst <= 1'b0;
+							st.scnt   <= st.scnt - 24'd1;
+							st.p_next <= 1'b1;
+						end else if (!mr_rq) begin
+							mr_rq   <= 1'b1;
+							mr_addr <= sec_adr;
+						end else if (mr_ack) begin
+							mr_rq       <= 1'b0;
+							st.nb       <= mr_q;
+							st.nbv      <= 1'b1;
+							st.nb_first <= st.sk == 12'd0 && !st.sfirst;
+							st.nb_last  <= st.sk == st.sect_len - 12'd1;
+							st.sk       <= st.sk + 12'd1;
+							if (st.sk == st.sect_len - 12'd1) begin
+								st.sec_init <= 2'd0;
+								st.sfirst <= 1'b0;
+								st.scnt   <= st.scnt - 24'd1;
+								st.p_next <= 1'b1;
+							end
+						end
+					end
+					endcase
 				end else if (st.pidx == st.len) begin
 					st.pdone <= 1'b1;
 				end else if (st.rt == R_SUBCH && !c1[1] && st.pidx == 11'd12 && !st.efetched) begin
@@ -1188,10 +1327,21 @@ always_ff @(posedge clk) begin
 			end
 
 			// put it on the bus
-			if (st.hs == 2'd0) begin
+			if (read_error) begin
+				// Finish an advertised byte before changing phase.
+				if (st.hs == 2'd1) begin
+					if (ack) st.hs <= 2'd2;
+				end else if (!ack) begin
+					st.ph    <= F_EXEC;
+					st.hs    <= 2'd0;
+					st.dly   <= e2s;
+					st.dslow <= 1'b0;
+				end
+			end else if (st.hs == 2'd0) begin
 				if (!st.dbv && st.nbv) begin
-					st.dbo    <= st.nb;
-					st.dbv    <= 1'b1;
+					st.dbo     <= st.nb;
+					st.db_last <= st.nb_last;
+					st.dbv     <= 1'b1;
 					st.nbv    <= 1'b0;
 					st.dfirst <= 1'b0;
 					st.dly    <= st.dfirst ? 16'd0 : st.rt != R_SECT ? B_REPLY : st.nb_first && !fast ? B_SECGAP : B_DIN;
@@ -1214,9 +1364,8 @@ always_ff @(posedge clk) begin
 			end else if (!ack) begin
 				st.hs  <= 2'd0;
 				st.dbv <= 1'b0;
-				st.ck  <= st.ck + 11'd1;
 				// ATN: a sector is finished first
-				if (atn && (st.rt != R_SECT || st.ck == 11'd2047)) begin
+				if (atn && (st.rt != R_SECT || st.db_last)) begin
 					st.ph    <= F_ATN;
 					st.dly   <= X_ATN;
 					st.dslow <= 1'b1;
@@ -1232,25 +1381,60 @@ always_ff @(posedge clk) begin
 				if (ack) begin
 					st.hs      <= 2'd2;
 					st.ml_left <= st.ml_left - 8'd1;
-					if (!st.ml_err) case (st.ml_st)
+					if (!st.ml_err && !c1[4]) begin
+						st.ml_i <= st.ml_i + 8'd1;
+						case (st.ml_i)
+						8'd4: st.ml_mode.vflags <= db_i;
+						8'd5: begin
+							st.ml_mode.vrecovery <= db_i;
+							st.ml_err <= db_i[5:4] != 2'd0;
+						end
+						8'd9: begin
+							st.ml_mode.vretry <= db_i[3:0];
+							st.ml_mode.custom <= 1'b0;
+							st.ml_mode.p28_applied <= 1'b0;
+							st.ml_err <= db_i[7:4] != 4'd0;
+							st.ml_st <= 3'd2;
+						end
+						default: st.ml_err <= db_i != 8'd0;
+						endcase
+					end else if (!st.ml_err) case (st.ml_st)
 					3'd0: begin
-						// header; byte 3 is the block descriptor length
 						st.ml_n <= st.ml_n + 8'd1;
 						if (st.ml_n == 8'd3) begin
-							st.ml_err <= db_i[2:0] != 3'd0;
-							st.ml_bd  <= db_i != 8'd0;
+							st.ml_err <= db_i != 8'd0 && db_i != 8'd8;
+							st.ml_bd  <= db_i == 8'd8;
 							st.ml_n   <= db_i;
-							st.ml_st  <= db_i == 8'd0 ? 3'd2 : 3'd1;
-						end
+							st.ml_i   <= 8'd0;
+							st.ml_st  <= db_i == 8'd8 ? 3'd1 : 3'd2;
+						end else st.ml_err <= db_i != 8'd0;
 					end
-					3'd1, 3'd3: begin
+					3'd1: begin
+						st.ml_i <= st.ml_i + 8'd1;
 						st.ml_n <= st.ml_n - 8'd1;
+						case (st.ml_i)
+						8'd0: begin
+							st.ml_mode.density <= db_i;
+							st.ml_err <= db_i != 8'h00 && db_i != 8'h81;
+						end
+						8'd5: st.ml_err <= db_i != 8'd0;
+						8'd6: begin
+							st.ml_mode.block_len[11:8] <= db_i[3:0];
+							st.ml_err <= db_i[7:4] != 4'd0;
+						end
+						8'd7: begin
+							st.ml_mode.block_len[7:0] <= db_i;
+							st.ml_mode.custom <= 1'b1;
+							st.ml_mode.p28_applied <= 1'b0;
+							st.ml_err <= !descriptor_valid(st.ml_mode.density, {st.ml_mode.block_len[11:8], db_i});
+						end
+						default: ;
+						endcase
 						if (st.ml_n == 8'd1) st.ml_st <= 3'd2;
 					end
 					3'd2: begin
 						st.ml_page <= db_i;
-						st.ml_n    <= 8'd5;
-						st.ml_st   <= db_i == 8'd0 ? 3'd3 : 3'd4;
+						st.ml_st   <= 3'd4;
 					end
 					3'd4: begin
 						st.ml_i  <= 8'd0;
@@ -1270,19 +1454,23 @@ always_ff @(posedge clk) begin
 						if (st.ml_n == 8'd1) st.ml_st <= 3'd2;
 						case (st.ml_page)
 						8'h28: case (st.ml_i[1:0])
-							2'd0: st.p28[31:24] <= db_i;
-							2'd1: st.p28[23:16] <= db_i;
-							2'd2: st.p28[15:8]  <= db_i;
-							default: st.p28[7:0] <= db_i;
+							2'd0: begin st.ml_mode.p28[31:24] <= db_i; st.ml_err <= db_i != 8'd0; end
+							2'd1: begin st.ml_mode.p28[23:16] <= db_i; st.ml_err <= db_i != 8'd0; end
+							2'd2: st.ml_mode.p28[15:8] <= db_i;
+							default: begin
+								st.ml_mode.p28[7:0] <= db_i;
+								st.ml_mode.p28_applied <= 1'b1;
+								st.ml_err <= {st.ml_mode.p28[15:8], db_i} > 16'd2352;
+							end
 							endcase
-						8'h29: st.p29 <= db_i;
-						8'h2A: if (st.ml_i[0]) st.p2a[7:0] <= db_i; else st.p2a[15:8] <= db_i;
-						8'h2B: st.p2b <= db_i;
+						8'h29: st.ml_mode.p29 <= db_i;
+						8'h2A: if (st.ml_i[0]) st.ml_mode.p2a[7:0] <= db_i; else st.ml_mode.p2a[15:8] <= db_i;
+						8'h2B: st.ml_mode.p2b <= db_i;
 						default: case (st.ml_i)
-							8'd0: st.p0e_immed <= db_i[2];
-							8'd3: st.p0e_b3    <= db_i[0];
-							8'd6: st.p0e_sel0  <= db_i[1:0];
-							8'd8: st.p0e_sel1  <= db_i[1:0];
+							8'd0: st.ml_mode.p0e_immed <= db_i[2];
+							8'd3: st.ml_mode.p0e_b3    <= db_i[0];
+							8'd6: st.ml_mode.p0e_sel0  <= db_i[1:0];
+							8'd8: st.ml_mode.p0e_sel1  <= db_i[1:0];
 							default: ;
 							endcase
 						endcase
@@ -1292,14 +1480,29 @@ always_ff @(posedge clk) begin
 			end else if (!ack) begin
 				st.hs  <= 2'd0;
 				st.dly <= B_CMD;
-				if (st.ml_left == 8'd0) begin
+				if (atn) begin
+					st.ph         <= F_MOUT;
+					st.pl         <= L_MOUT;
+					st.dly        <= 16'd0;
+					st.dslow      <= 1'b0;
+					st.msg_return <= M_DOUT;
+				end else if (st.ml_left == 8'd0) begin
 					st.ph    <= F_EXEC;
 					st.mop   <= MO_FLUSH;
-					st.xs    <= st.ml_bd && !st.ml_err ? X_MECH : X_STAT;
-					st.err   <= (st.ml_err || st.ml_st != 3'd2) ? E_BAD_PARAM : E_NONE;
-					st.sense <= (st.ml_err || st.ml_st != 3'd2) ? E_BAD_PARAM : E_NONE;
+					st.xs    <= X_STAT;
 					st.dly   <= X_MSEL;
 					st.dslow <= 1'b1;
+					if (st.ml_err || st.ml_st != 3'd2 ||
+					    (st.ml_mode.custom && st.ml_mode.p28_applied &&
+					    {1'b0, ml_origin} + {1'b0, st.ml_mode.p28[11:0]} > 13'd2352)) begin
+						st.err   <= E_BAD_PARAM;
+						st.sense <= E_BAD_PARAM;
+					end else begin
+						st.mode  <= st.ml_mode;
+						st.err   <= E_NONE;
+						st.sense <= E_NONE;
+						if (st.ml_bd) st.xs <= X_MECH;
+					end
 				end
 			end
 		end
@@ -1313,7 +1516,12 @@ always_ff @(posedge clk) begin
 			end else if (!ack) begin
 				st.hs    <= 2'd0;
 				st.dslow <= 1'b0;
-				if (st.ph == F_STAT) begin
+				if (st.ph == F_STAT && atn) begin
+					st.ph         <= F_MOUT;
+					st.pl         <= L_MOUT;
+					st.dly        <= 16'd0;
+					st.msg_return <= M_STAT;
+				end else if (st.ph == F_STAT) begin
 					st.ph  <= F_MIN;
 					st.pl  <= L_MIN;
 					st.dbo <= 8'h00;
@@ -1365,15 +1573,38 @@ always_ff @(posedge clk) begin
 					st.cdb_n <= 4'd0;
 					st.dly   <= B_CMD;
 					st.dslow <= 1'b0;
+				end else if (st.dbo == 8'h08 && st.msg_return != M_NONE) begin
+					if (!atn) begin
+						st.dslow <= 1'b0;
+						case (st.msg_return)
+						M_CMD: begin
+							st.ph  <= F_CMD;
+							st.pl  <= L_CMD;
+							st.dly <= B_CMD;
+						end
+						M_DOUT, M_STAT: begin
+							// Resume the release step of the acknowledged byte.
+							st.ph <= st.msg_return == M_DOUT ? F_DOUT : F_STAT;
+							st.pl <= st.msg_return == M_DOUT ? L_DOUT : L_STAT;
+							st.hs <= 2'd2;
+							if (st.msg_return == M_STAT) st.dbo <= st.err == E_NONE ? 8'h00 : 8'h02;
+						end
+						default: ;
+						endcase
+					end
 				end else if (st.dbo == 8'h0C) begin
 					// BUS DEVICE RESET
-					bus_rst <= 1'b1;
-					st.ua   <= 2'd1;
-					st.ph   <= F_FREE;
+					st.bus_rst    <= 1'b1;
+					st.ua         <= 2'd1;
+					st.ph         <= F_FREE;
+					st.mode       <= mode_defaults();
+					st.ml_mode    <= '0;
+					st.msg_return <= M_NONE;
+					mr_rq         <= 1'b0;
 				end else begin
 					// ABORT and the rest: the command is dropped, audio stops
 					st.mop   <= MO_ABORT;
-					m_go     <= 1'b1;
+					st.m_go  <= 1'b1;
 					st.ph    <= F_DROP;
 					st.dly   <= X_ABORT;
 					st.dslow <= 1'b1;
@@ -1400,13 +1631,16 @@ assign db_oe  = io;
 // one sub-channel snapshot per reply, as the controller copies it
 assign q_hold = (st.ph == F_EXEC || st.ph == F_DIN) && (op == 8'h42 || op == 8'hDD);
 
+assign bus_rst = st.bus_rst;
+assign p_next = st.p_next;
+assign m_go   = st.m_go;
 assign m_op   = st.mop;
 assign m_lba  = st.tgt;
 assign m_end  = st.tgt2;
 assign m_mode = st.mmode;
 
-assign port0_sel = st.p0e_sel0;
-assign port1_sel = st.p0e_sel1;
+assign port0_sel = st.mode.p0e_sel0;
+assign port1_sel = st.mode.p0e_sel1;
 
 assign ss_so = SAVESTATE ? st[SCSI_BITS-1] : ss_si;
 

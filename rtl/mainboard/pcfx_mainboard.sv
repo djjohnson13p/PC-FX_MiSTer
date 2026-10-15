@@ -121,6 +121,8 @@ module pcfx_mainboard #(
 	output logic        cd_blk_rd,
 	input  logic        cd_blk_done,
 	input  logic        cd_blk_err,
+	input  logic        cd_blk_busy,
+	input  logic        cd_blk_fault,
 	output logic [15:0] cd_buf_addr,
 	input  logic  [7:0] cd_buf_dout,
 	input  logic        cd_disc,
@@ -183,13 +185,13 @@ logic  [3:0] be_n;
 logic        mrq_n, rw, bcyst_n, ready_n, szrq_n;
 logic        intr, nmi_n, adrserr_n;
 logic  [3:0] intv_n;
+logic  [1:0] st;
 logic [31:0] d;          // the CPU data bus
 logic [31:0] d_ext;      // the same bus less the glue's own drive
 
 /* verilator lint_off UNUSEDSIGNAL */
 logic        a_oe, st_oe, da_n, da_oe, mrq_oe, rw_oe, bcyst_oe, hldak_n, block;
 logic  [3:0] be_oe;
-logic  [1:0] st;
 logic [31:0] cpu_pc, cpu_psw;
 logic [15:0] cpu_insn;
 logic        cpu_halted, cpu_illegal;
@@ -289,6 +291,7 @@ upd65641 #(
 	.d_oe       (ga_d_oe),
 	.be_n       (be_n),
 	.mrq_n      (mrq_n),
+	.st         (st),
 	.rw         (rw),
 	.bcyst_n    (bcyst_n),
 	.ready_n    (ready_n),
@@ -764,7 +767,7 @@ huc6271 #(
 	.dbg_dl       (ra_dbg_dl)
 );
 
-assign ss_busy = ga_ss_busy || king_ss_busy || ra_ss_busy;
+assign ss_busy = ga_ss_busy || king_ss_busy || ra_ss_busy || (cd_blk_busy && !cd_blk_fault);
 
 sram_2264 u_rram_a (
 	.clk  (clk),
@@ -835,6 +838,8 @@ pcfx_cd_drive #(
 	.blk_rd     (cd_blk_rd),
 	.blk_done   (cd_blk_done),
 	.blk_err    (cd_blk_err),
+	.blk_busy   (cd_blk_busy),
+	.blk_fault  (cd_blk_fault),
 	.buf_addr   (cd_buf_addr),
 	.buf_dout   (cd_buf_dout),
 	.disc       (cd_disc),

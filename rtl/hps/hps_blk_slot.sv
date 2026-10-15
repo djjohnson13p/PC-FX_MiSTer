@@ -3,8 +3,8 @@
 // One OSD image slot of the framework block port, behind the guest block
 // contract: the guest sets a block number and raises rd or wr, the block
 // moves through the buffer, done pulses once with err valid. Linux answers
-// each request in its own time; a request it never finishes ends with err
-// after TIMEOUT clocks so a silent service cannot hold a guest forever.
+// each request in its own time; an unfinished request ends with err after
+// TIMEOUT clocks. The slot stays busy until that backend response retires.
 //
 //   req_rd/req_wr ─> sd_rd/sd_wr ─> sd_ack ┬─ sd_buff_wr: buffer <= Linux
 //                                          └─ Linux <= buffer
@@ -56,6 +56,7 @@ module hps_blk_slot #(parameter BUF_AW = 9, parameter LBA_W = 22, parameter TIME
 );
 
 localparam [2:0] S_IDLE = 3'd0, S_WAIT = 3'd1, S_MOVE = 3'd2, S_END = 3'd3, S_DROP = 3'd4;
+localparam [2:0] S_FAIL = 3'd5, S_DWAIT = 3'd6, S_DRAIN = 3'd7;
 
 reg  [2:0] state;
 reg [31:0] timer;
@@ -76,7 +77,9 @@ always @(posedge clk) begin
 		present <= 0;
 		wp      <= 0;
 		blocks  <= 0;
+		timer   <= 0;
 		bank    <= 0;
+		base    <= 0;
 	end
 	else begin
 		if (img_mounted) begin
@@ -94,27 +97,52 @@ always @(posedge clk) begin
 			bank   <= req_bank;
 			base   <= req_base;
 			err    <= 0;
-			timer  <= TIMEOUT;
+			timer  <= 32'(TIMEOUT);
 			state  <= S_WAIT;
 		end
 
-		// hold the request until Linux takes it
+		// Hold the backend request even if its guest has timed out.
 		S_WAIT: begin
 			if (sd_ack) begin
 				sd_rd <= 0;
 				sd_wr <= 0;
-				state <= S_MOVE;
 			end
-			else if (timer == 0) begin
-				sd_rd <= 0;
-				sd_wr <= 0;
+			if (timer == 0) begin
 				err   <= 1;
-				state <= S_END;
+				state <= S_FAIL;
+			end else begin
+				timer <= timer - 1'd1;
+				if (sd_ack) state <= S_MOVE;
+			end
+		end
+
+		S_MOVE: begin
+			if (!sd_ack) state <= S_END;
+			else if (timer == 0) begin
+				err   <= 1;
+				state <= S_FAIL;
 			end
 			else timer <= timer - 1'd1;
 		end
 
-		S_MOVE: if (!sd_ack) state <= S_END;
+		S_FAIL: begin
+			done <= 1;
+			if (sd_ack) begin
+				sd_rd <= 0;
+				sd_wr <= 0;
+				state <= S_DRAIN;
+			end
+			else if (sd_rd || sd_wr) state <= S_DWAIT;
+			else state <= S_DROP;
+		end
+
+		S_DWAIT: if (sd_ack) begin
+			sd_rd <= 0;
+			sd_wr <= 0;
+			state <= S_DRAIN;
+		end
+
+		S_DRAIN: if (!sd_ack) state <= S_DROP;
 
 		// one done, then wait for the guest to drop its request
 		S_END: begin
@@ -135,12 +163,14 @@ wire [BUF_AW:0]   fw_sum  = {1'b0, base} + {1'b0, sdx[BUF_AW-1:0]};
 wire [BUF_AW-1:0] fw_ring = (RING != 0 && fw_sum >= (BUF_AW + 1)'(RING)) ? BUF_AW'(fw_sum - (BUF_AW + 1)'(RING)) : fw_sum[BUF_AW-1:0];
 wire [BUF_AW-1:0] fw_addr = BASED  ? fw_ring :
                             BANKED ? {bank, sdx[BUF_AW-2:0]} : sdx[BUF_AW-1:0];
+// WAIT accepts the first ACK-edge byte; timeout stops further writes.
+wire fw_write = !reset && timer != 0 && (state == S_WAIT || state == S_MOVE);
 
 cache_ram_dp #(.ADDR_WIDTH(BUF_AW), .DATA_WIDTH(8)) buffer
 (
 	.clk_i(clk),
 	.addr_a_i(fw_addr),
-	.wren_a_i(sd_buff_wr & sd_ack),
+	.wren_a_i(sd_buff_wr & sd_ack & fw_write),
 	.wdata_a_i(sd_buff_dout),
 	.q_a_o(sd_buff_din),
 	.addr_b_i(buf_addr),

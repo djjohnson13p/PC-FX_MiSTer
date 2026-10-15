@@ -46,6 +46,8 @@ module pcfx_cd_host #(parameter TIMEOUT = 429545454)
 	input             blk_rd,
 	output            blk_done,
 	output            blk_err,
+	output            blk_busy,
+	output            blk_fault,
 	input      [15:0] buf_addr,
 	output      [7:0] buf_dout,
 
@@ -86,7 +88,7 @@ assign toc_busy = toc_load;
 
 wire [31:0] lba32;
 wire [19:0] blocks_unused;
-wire        present_unused, wp_unused, mounted_unused, busy_unused;
+wire        present_unused, wp_unused, mounted_unused;
 
 hps_blk_slot #(.BUF_AW(16), .LBA_W(20), .TIMEOUT(TIMEOUT), .BASED(1), .RING(58752)) slot
 (
@@ -96,10 +98,11 @@ hps_blk_slot #(.BUF_AW(16), .LBA_W(20), .TIMEOUT(TIMEOUT), .BASED(1), .RING(5875
 	.img_mounted(img_mounted), .img_readonly(img_readonly), .img_size(img_size),
 	.present(present_unused), .wp(wp_unused), .blocks(blocks_unused), .mounted(mounted_unused),
 	.req_lba(blk_lba), .req_bank(1'b0), .req_base(blk_base), .req_rd(blk_rd), .req_wr(1'b0),
-	.busy(busy_unused), .done(blk_done), .err(blk_err),
+	.busy(blk_busy), .done(blk_done), .err(blk_err),
 	.buf_addr(toc_we ? toc_waddr : buf_addr), .buf_we(toc_we), .buf_din(ioctl_dout), .buf_dout(buf_dout)
 );
 
+assign blk_fault = blk_busy && blk_err;
 assign sd_lba = lba32;
 assign sd_blk_cnt = {3'd0, blk_cnt};
 

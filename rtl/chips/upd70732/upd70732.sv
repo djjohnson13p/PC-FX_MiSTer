@@ -79,7 +79,6 @@ logic [31:0] reg_data;
 
 NECv810 #(
 	.IO_MRQ     (1),
-	.BITSTR_NEC (1),
 	.T2_PINS    (1),
 	.VB_EXT     (0)
 ) u_cpu (

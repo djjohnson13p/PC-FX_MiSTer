@@ -21,10 +21,13 @@
 //   CG, dot      CG  + (char << s) + offset
 //
 // n = log2 screen width, 2 << k bits per dot (k = 3 for 64K and 16M).
-// Base registers give A16:A10; the slot's bank is the word's own bank.
+// Base registers select the bank and A16:A10.
 
 module king_bg_addrgen
 	import huc6272_pkg::*;
+#(
+	parameter bit BANK = 1'b0
+)
 (
 	input  logic             clk,
 	input  logic             ce_osc,
@@ -39,10 +42,10 @@ module king_bg_addrgen
 	input  logic      [15:0] size0,
 	input  logic [2:0][7:0]  size,
 	input  logic       [3:0] cyl,
-	input  logic [3:0][6:0]  bat,
-	input  logic [3:0][6:0]  cg,
-	input  logic       [6:0] bat0s,
-	input  logic       [6:0] cg0s,
+	input  logic [3:0][7:0]  bat,
+	input  logic [3:0][7:0]  cg,
+	input  logic       [7:0] bat0s,
+	input  logic       [7:0] cg0s,
 	/* verilator lint_off UNUSEDSIGNAL */
 	input  logic      [10:0] sx0,        // fine scroll is applied when reading
 	input  logic [2:0][9:0]  sx,
@@ -135,7 +138,7 @@ logic  [4:0] b_tp;
 logic [15:0] b_ch;
 logic  [9:0] b_x, b_y;
 logic  [3:0] b_lw;
-logic  [6:0] b_bat, b_cg;
+logic  [7:0] b_bat, b_cg;
 
 wire  [7:0] sz_n = a_n == 2'd1 ? size[0] : a_n == 2'd2 ? size[1] : size[2];
 wire  [7:0] sz_m = a_n == 2'd0 ? size0[7:0]  : sz_n;
@@ -183,7 +186,7 @@ end
 logic  [9:0] row_v;
 logic  [4:0] row_s;
 logic [16:0] col, extra;
-logic  [6:0] base;
+logic  [7:0] base;
 
 wire [9:0] y_row = b_bad ? 10'd0 : b_y;
 wire [2:0] k3    = 3'd3 - {1'b0, b_k};
@@ -234,9 +237,9 @@ wire [3:0] shamt = b_rot && !b_isbat ? 4'({pos, 1'b0} << b_k) : 4'd0;
 
 always_ff @(posedge clk) begin
 	if (ce_osc && ph == 4'd4) begin
-		req_v     <= b_v;
-		req_a     <= {base, 10'd0} + row + col + extra;
-		rec.v     <= b_v;
+		req_v     <= b_v && base[7] == BANK;
+		req_a     <= {base[6:0], 10'd0} + row + col + extra;
+		rec.v     <= b_v && base[7] == BANK;
 		rec.bat   <= b_isbat;
 		rec.bg    <= b_n;
 		rec.grp   <= b_tp[4:3];

@@ -67,6 +67,8 @@ module pcfx_cd_drive #(
 	output logic        blk_rd,
 	input  logic        blk_done,
 	input  logic        blk_err,
+	input  logic        blk_busy,
+	input  logic        blk_fault,
 	output logic [15:0] buf_addr,
 	input  logic  [7:0] buf_dout,
 	input  logic        disc,
@@ -182,7 +184,9 @@ logic [15:0] rw_base;
 logic  [1:0] port0_sel, port1_sel;
 logic        bsy, req, cd, io, msg, db_oe;
 logic  [7:0] db_o;
-logic        ss_a, ss_b, ss_c;
+logic        ss_a, ss_b, ss_c, mech_ss_busy;
+
+assign ss_busy = mech_ss_busy || (blk_busy && !blk_fault);
 
 cd_scsi_target #(.SAVESTATE(SAVESTATE)) scsi (
 	.clk, .reset, .ce(ce_sys), .ce_x, .ce_t, .fast(speed != 2'd0),
@@ -210,8 +214,8 @@ cd_mech #(.SAVESTATE(SAVESTATE)) mech (
 	.port0_sel, .port1_sel, .cdda_ce, .cdda_l, .cdda_r,
 	.sm_rq(rq[1]), .sm_addr(ra[1]), .sm_ack(gnt[1]),
 	.tm_rq(rq[2]), .tm_addr(ra[2]), .tm_ack(gnt[2]), .m_q(buf_dout),
-	.blk_lba, .blk_base, .blk_cnt, .blk_rd, .blk_done, .blk_err,
-	.ss_shift, .ss_si(ss_a), .ss_so(ss_b), .ss_busy
+	.blk_lba, .blk_base, .blk_cnt, .blk_rd, .blk_done, .blk_err, .blk_busy, .blk_fault,
+	.ss_shift, .ss_si(ss_a), .ss_so(ss_b), .ss_busy(mech_ss_busy)
 );
 
 cd_subcode_gen #(.SAVESTATE(SAVESTATE)) sub (

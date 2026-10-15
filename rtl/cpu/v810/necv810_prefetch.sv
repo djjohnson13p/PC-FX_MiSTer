@@ -165,7 +165,8 @@ module necv810_prefetch (
 	assign pin_own_c_o = pin_own_c_q;
 	assign a_o = pin_a_q;
 	assign be_o = pin_be_q;
-	assign st_o = !pin_own_c_q ? 2'b00 : (f_branch_q && !f_beat_q) ? 2'b01 : 2'b11;
+	assign st_o = !pin_own_c_q ? 2'b00 :
+		(f_branch_q && !(fixed_16_i && f_beat_q)) ? 2'b01 : 2'b11;
 	assign bcyst_o = pin_own_c_q && f_t1_q;
 	assign da_o = pin_own_c_q && !f_t1_q;
 
@@ -255,8 +256,7 @@ module necv810_prefetch (
 				push_v = 1'b0;
 				push_aged_v = 1'b0;
 				push_addr_v = f_addr_q;
-				word_v = fixed_16_i ? {din_i[15:0], f_lo_q} :
-					(f_beat_q ? {din_i[31:16], f_lo_q} : din_i);
+				word_v = (fixed_16_i || f_beat_q) ? {din_i[15:0], f_lo_q} : din_i;
 				if (f_active_q) begin
 					if (f_t1_q) begin
 						f_t1_q <= 1'b0;

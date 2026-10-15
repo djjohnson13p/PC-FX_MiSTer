@@ -54,15 +54,14 @@ set_output_delay -clock sdram_clk_pin -min -0.800 $sdram_out_ports
 set_false_path -from [get_ports {SDRAM_DQ[*]}] -to [get_registers {*|altddio_in:u_sdram_dq_capture|*}]
 
 # The cell feeds two clk_sdram registers per bit, dq_cap_q and the high
-# half of pcfx_memory's mr_q, and calibration checks both: a phase passes
-# only if every beat is in both on its fixed edge, so wherever a hop is too
-# slow or too fast for the phase calibration sees it fail, and the window it
-# reports is net of the hops. Their setup and hold at the static phase say
-# nothing about the calibrated phase, so they are not checked (that would
-# only pad or crowd the routes); instead the routes are kept short and the
-# 32 hops alike, so all bits share one window. The skew leaves out on-die
-# variation: with it, one path's slow delay is set against another's fast
-# one, while all bits run at one voltage and temperature.
+# half of pcfx_memory's mr_q, and calibration checks both, so a hop that is
+# too slow or too fast for a phase just fails there. The hops only decide
+# where the window can sit: the longest sets its late end at the slow
+# corner, the shortest its early end at the fast corner. Hence an upper
+# bound and no hold check (which would only pad them). Keeping the window
+# wide enough also needs every hop's fast-corner setup slack under this
+# bound to be at most 4.6 ns (a hop of at least 3.2 ns); TimeQuest cannot
+# enforce that, so it is read from the report.
 set sdram_cap_cells [get_registers -nowarn {*|altddio_in:u_sdram_dq_capture|*}]
 set sdram_cap_regs  [get_registers -nowarn {*|sdram:u_sdram|dq_cap_q[*]}]
 for {set i 16} {$i < 32} {incr i} {
@@ -77,10 +76,8 @@ if {$sdram_cap_n > 32} {
 if {[get_collection_size $sdram_cap_cells] == 0 || $sdram_cap_n < 32} {
 	post_message -type error "sdram.sdc: input cell or its 32 capture registers not found"
 } else {
-	set_max_delay -from $sdram_cap_cells -to $sdram_cap_regs 15.000
+	set_max_delay -from $sdram_cap_cells -to $sdram_cap_regs 7.800
 	set_min_delay -from $sdram_cap_cells -to $sdram_cap_regs -15.000
-	set_net_delay -max 4.700 -from $sdram_cap_cells
-	set_max_skew -exclude {odv} -from $sdram_cap_cells -to $sdram_cap_regs 0.800
 }
 
 # pcfx_memory's main-RAM result register is clocked by the controller clock

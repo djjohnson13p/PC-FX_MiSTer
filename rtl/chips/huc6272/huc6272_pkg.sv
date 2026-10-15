@@ -75,10 +75,10 @@ package huc6272_pkg;
 	typedef struct packed {
 		logic             rsw;
 		logic [3:0][2:0]  prio;
-		logic [3:0][6:0]  bat;    // A16:A10; BG0 main
-		logic [3:0][6:0]  cg;
-		logic      [6:0]  bat0s;  // BG0 sub
-		logic      [6:0]  cg0s;
+		logic [3:0][7:0]  bat;    // bank, A16:A10; BG0 main
+		logic [3:0][7:0]  cg;
+		logic      [7:0]  bat0s;  // BG0 sub
+		logic      [7:0]  cg0s;
 		logic     [10:0]  sx0;
 		logic     [10:0]  sy0;
 		logic [2:0][9:0]  sx;     // BG1-3
@@ -125,6 +125,7 @@ package huc6272_pkg;
 		logic        req_we;
 		logic        fly;
 		logic [15:0] wdata;
+		logic  [5:0] recovery_ticks;
 	} kram_state_t;
 
 	typedef struct packed {
@@ -221,6 +222,7 @@ package huc6272_pkg;
 		logic [2:0][15:0] w; // w[0] oldest
 		logic [15:0] cur;    // word on the K-R bus
 		logic        bv;     // it is sent this dot
+		logic        start_pending;
 	} rb_state_t;
 
 	localparam int CPUIF_BITS  = $bits(cpuif_state_t);

@@ -5,7 +5,7 @@ package huc6271_pkg;
 
 	// Parser states
 	typedef enum logic [2:0] {
-		P_HUNT, P_TYPE, P_LENH, P_LENL, P_DATA, P_DONE
+		P_HUNT, P_TYPE, P_LENH, P_LENL, P_DATA, P_DONE, P_SKIP
 	} pstate_t;
 
 	// Data FIFO between the parser and the decoder

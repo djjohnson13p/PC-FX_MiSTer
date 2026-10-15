@@ -62,16 +62,16 @@ always_ff @(posedge clk) begin
 			7'h10: st.mode <= acc.d;
 			7'h12: {st.h.rsw, st.h.prio} <= acc.d[12:0];
 			7'h16: st.cyl <= acc.d[3:0];
-			7'h20: st.h.bat[0] <= acc.d[6:0];
-			7'h21: st.h.cg[0]  <= acc.d[6:0];
-			7'h22: st.h.bat0s  <= acc.d[6:0];
-			7'h23: st.h.cg0s   <= acc.d[6:0];
-			7'h24: st.h.bat[1] <= acc.d[6:0];
-			7'h25: st.h.cg[1]  <= acc.d[6:0];
-			7'h28: st.h.bat[2] <= acc.d[6:0];
-			7'h29: st.h.cg[2]  <= acc.d[6:0];
-			7'h2A: st.h.bat[3] <= acc.d[6:0];
-			7'h2B: st.h.cg[3]  <= acc.d[6:0];
+			7'h20: st.h.bat[0] <= acc.d[7:0];
+			7'h21: st.h.cg[0]  <= acc.d[7:0];
+			7'h22: st.h.bat0s  <= acc.d[7:0];
+			7'h23: st.h.cg0s   <= acc.d[7:0];
+			7'h24: st.h.bat[1] <= acc.d[7:0];
+			7'h25: st.h.cg[1]  <= acc.d[7:0];
+			7'h28: st.h.bat[2] <= acc.d[7:0];
+			7'h29: st.h.cg[2]  <= acc.d[7:0];
+			7'h2A: st.h.bat[3] <= acc.d[7:0];
+			7'h2B: st.h.cg[3]  <= acc.d[7:0];
 			7'h2C: st.size0    <= acc.d;
 			7'h2D: st.size[0]  <= acc.d[7:0];
 			7'h2E: st.size[1]  <= acc.d[7:0];
@@ -120,7 +120,7 @@ end
 
 logic       mpsw;
 mpw_t       wa, wb;
-logic [3:0] has_cg;
+logic [1:0][3:0] has_cg;
 
 king_bg_mprog #(.SAVESTATE(SAVESTATE)) mprog (
 	.clk, .reset, .ce_osc,
@@ -137,7 +137,9 @@ wire active = mpsw && disp_line && nkx < KX_SEQ_END;
 logic [3:0] shown;
 always_comb begin
 	for (int i = 0; i < 4; i++)
-		shown[i] = mpsw && h.prio[i] != 3'd0 && has_cg[i] && st.mode[i*4 +: 4] != 4'h0
+		shown[i] = mpsw && h.prio[i] != 3'd0
+		        && (has_cg[h.cg[i][7]][i] || (i == 0 && has_cg[h.cg0s[7]][0]))
+		        && st.mode[i*4 +: 4] != 4'h0
 		        && st.mode[i*4 +: 4] != 4'h6 && st.mode[i*4 +: 4] != 4'h7 && st.mode[i*4 +: 4] != 4'h8;
 end
 
@@ -162,7 +164,7 @@ logic             va, vb;
 logic      [16:0] aa, ab;
 slot_rec_t        ra, rb;
 
-king_bg_addrgen gen_a (
+king_bg_addrgen #(.BANK(1'b0)) gen_a (
 	.clk, .ce_osc, .ph, .active, .nkx,
 	.w (wa),
 	.prio (h.prio), .mode (st.mode), .size0 (st.size0), .size (st.size), .cyl (st.cyl),
@@ -172,7 +174,7 @@ king_bg_addrgen gen_a (
 	.req_v (va), .req_a (aa), .rec (ra)
 );
 
-king_bg_addrgen gen_b (
+king_bg_addrgen #(.BANK(1'b1)) gen_b (
 	.clk, .ce_osc, .ph, .active, .nkx,
 	.w (wb),
 	.prio (h.prio), .mode (st.mode), .size0 (st.size0), .size (st.size), .cyl (st.cyl),

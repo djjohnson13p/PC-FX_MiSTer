@@ -61,9 +61,13 @@ package pcfx_ss_pkg;
 	localparam int WORDS     = HDR_WORDS + (ELEMS + 3) / 4;
 	localparam logic [31:0] SIZE_DWORDS = 32'(2 * (WORDS - 1));
 
+	// Scalar field meanings must match even when segment lengths stay equal.
+	localparam logic [31:0] CPU_STATE_VERSION = 32'd2;
+
 	function automatic logic [31:0] layout_hash();
 		logic [31:0] h = 32'h811C9DC5;
 		h = (h ^ 32'(CHAIN_BITS)) * 32'h01000193;
+		h = (h ^ CPU_STATE_VERSION) * 32'h01000193;
 		for (int s = 0; s <= int'(SG_LAST); s++)
 			h = (h ^ 32'(seg_len(seg_t'(s)))) * 32'h01000193;
 		return h;

@@ -3,9 +3,9 @@
 //
 // A write to 0E is taken at once into a one-word buffer and done in the
 // next free slot of its bank; a second write, or 0D, waits (BUSY) until the
-// buffered one is done. A read of 0E starts the KRAM read and waits for the
-// data. Each 0E access then steps its address by the signed 10-bit
-// increment, wrapping inside A16:A0 (bank and page stay).
+// buffered one and its recovery are done. A read of 0E then starts
+// the KRAM read and waits for the data. Each 0E access steps its address by
+// the signed 10-bit increment, wrapping inside A16:A0 (bank and page stay).
 
 module king_cpu_kram #(
 	parameter bit SAVESTATE = 1'b1
@@ -52,13 +52,14 @@ endfunction
 wire sel_c = ar == 7'h0C;
 wire sel_d = ar == 7'h0D;
 wire sel_e = ar == 7'h0E;
-wire wbuf  = st.req_v && st.req_we;
+wire recovery_busy = st.recovery_ticks != 6'd0;
+wire wbuf  = (st.req_v && st.req_we) || recovery_busy;
 
-assign hold = (pend_wr && sel_e && (st.req_v || init))
+assign hold = (pend_wr && sel_e && (st.req_v || init || recovery_busy))
            || (pend_rd && sel_e && !rd_done)
            || ((pend_wr || pend_rd) && sel_d && wbuf);
 
-wire rd_start = pend_rd && sel_e && !st.req_v && !rd_done && !init;
+wire rd_start = pend_rd && sel_e && !st.req_v && !rd_done && !init && !recovery_busy;
 wire wr_reg   = acc.wr && !acc.ar;
 wire rd_reg   = acc.rd && !acc.ar;
 
@@ -68,6 +69,8 @@ always_ff @(posedge clk) begin
 	end else if (SAVESTATE && ss_shift) begin
 		st <= kram_state_t'({st[KRAM_BITS-2:0], ss_si});
 	end else if (ce_osc) begin
+		if (recovery_busy)
+			st.recovery_ticks <= st.recovery_ticks - 6'd1;
 		if (wr_reg) begin
 			case (acc.r)
 				7'h0C:
@@ -102,6 +105,7 @@ always_ff @(posedge clk) begin
 				if (st.req_we) begin
 					st.req_v <= 1'b0;
 					st.kwa.a <= step(st.kwa.a, st.kwa.inc);
+					st.recovery_ticks <= 6'd8;
 				end
 			end
 		end
