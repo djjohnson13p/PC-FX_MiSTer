@@ -164,3 +164,9 @@ set_location_assignment LAB_X36_Y1 -to "emu:emu|pcfx_memory:pcfx_memory|sdram:u_
 # Socket samples: the CPU's strobes reach them within one SDRAM clock, so the
 # retimer must not pull the scheduler's decode in front of them.
 set_instance_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF -to "emu:emu|pcfx_memory:pcfx_memory|s_*"
+
+# Keep the accumulator feedback near its carry chains.
+set_location_assignment LAB_X28_Y68 -to "ascal:ascal|o_hacc_next[*]"
+
+# Keep color and timing together at the clock-rate boundary.
+set_instance_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING OFF -to "emu:emu|pcfx_video:pcfx_video|*_sat_q*"

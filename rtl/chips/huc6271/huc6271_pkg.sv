@@ -5,12 +5,12 @@ package huc6271_pkg;
 
 	// Parser states
 	typedef enum logic [2:0] {
-		P_HUNT, P_TYPE, P_LENH, P_LENL, P_DATA, P_DONE, P_SKIP
+		P_HUNT, P_TYPE, P_LENH, P_LENL, P_DATA, P_DONE, P_SKIP, P_BAD
 	} pstate_t;
 
 	// Data FIFO between the parser and the decoder
-	localparam int FIFO_AW   = 6;
-	localparam int FIFO_STOP = 56;  // -REQR goes high at this many bytes
+	localparam int FIFO_AW   = 7;
+	localparam int FIFO_STOP = 120;  // -REQR goes high at this many bytes
 
 	// Inverse DCT. Rows then columns, each an 8-point even/odd matrix
 	// product with 12-bit coefficients C(k) cos((2x+1)k pi/16), C(0) = 1/sqrt 2,
@@ -97,10 +97,17 @@ package huc6271_pkg;
 		logic [3:0] qcx;
 	} strip_t;
 
-	localparam int REGS_BITS  = $bits(regs_t);
-	localparam int STRIP_BITS = $bits(strip_t);
+	typedef struct packed {
+		logic [8:0] hunted;
+		logic       exhausted;
+		pstate_t    ps;
+	} parser_t;
+
+	localparam int REGS_BITS   = $bits(regs_t);
+	localparam int STRIP_BITS  = $bits(strip_t);
+	localparam int PARSER_BITS = $bits(parser_t);
 	/* verilator lint_off UNUSEDPARAM */
-	localparam int SS_BITS    = REGS_BITS + STRIP_BITS + $bits(pstate_t);
+	localparam int SS_BITS     = REGS_BITS + STRIP_BITS + PARSER_BITS;
 	/* verilator lint_on UNUSEDPARAM */
 
 endpackage

@@ -222,7 +222,7 @@ package huc6272_pkg;
 		logic [2:0][15:0] w; // w[0] oldest
 		logic [15:0] cur;    // word on the K-R bus
 		logic        bv;     // it is sent this dot
-		logic        start_pending;
+		logic        ss_pad; // reserved serial bit for existing saves
 	} rb_state_t;
 
 	localparam int CPUIF_BITS  = $bits(cpuif_state_t);

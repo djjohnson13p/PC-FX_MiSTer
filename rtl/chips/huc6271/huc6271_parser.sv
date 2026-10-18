@@ -15,8 +15,9 @@ module huc6271_parser #(
 	input  logic        clk,
 	input  logic        reset,
 	input  logic        ce,
-	input  logic        init,       // judgment or reset: hunt again
+	input  logic        init,       // judgment: renew a live search
 	input  logic        run,
+	input  logic        stream_start,
 
 	input  logic        rx_v,
 	input  logic  [7:0] rx_d,
@@ -34,54 +35,68 @@ module huc6271_parser #(
 
 import huc6271_pkg::*;
 
+parser_t     p;
 logic [15:0] cnt;
 logic  [7:0] len_hi;
 logic        stuff;
 
 wire valid_kind = rx_d == 8'hFF || rx_d == 8'hF8 || rx_d[7:2] == 6'b111100;
 wire [15:0] len = {len_hi, rx_d};
+wire charge = (ps == P_HUNT && rx_d != 8'hFF) || ps == P_TYPE || ps == P_SKIP;
+wire last_charge = p.hunted == 9'd511;
 
 always_ff @(posedge clk) begin
 	if (reset) begin
-		ps   <= P_HUNT;
+		p    <= '0;
 		hdr  <= 1'b0;
 		push <= 1'b0;
 	end else if (SAVESTATE && ss_shift) begin
-		ps <= pstate_t'({ps[1:0], ss_si});
+		p <= parser_t'({p[PARSER_BITS-2:0], ss_si});
 	end else if (ce) begin
 		hdr  <= 1'b0;
 		push <= 1'b0;
-		if (init || !run) begin
-			ps <= P_HUNT;
+		if (!run || (init && ps != P_BAD) ||
+			(stream_start && ps != P_DATA && ps != P_DONE)) begin
+			p <= '0;
 		end else if (rx_v) begin
+			// SEARCH charges scans, type bytes and rejected table bytes.
+			if (charge && !p.exhausted) begin
+				if (last_charge)
+					p.exhausted <= 1'b1;
+				else
+					p.hunted <= p.hunted + 9'd1;
+			end
 			case (ps)
-				P_HUNT: if (rx_d == 8'hFF) ps <= P_TYPE;
+				P_HUNT: begin
+					// An exhausted scan still fetches once before reading the type.
+					if (rx_d == 8'hFF || p.exhausted) p.ps <= P_TYPE;
+				end
 				P_TYPE: begin
 					kind <= rx_d;
-					ps   <= valid_kind ? P_LENH : P_HUNT;
+					p.ps <= valid_kind || p.exhausted || last_charge ? P_LENH : P_HUNT;
 				end
 				P_LENH: begin
 					len_hi <= rx_d;
-					ps     <= P_LENL;
+					p.ps   <= P_LENL;
 				end
 				P_LENL: begin
 					cnt   <= len;
 					stuff <= 1'b0;
 					if (!len[15] && len > 16'd2) begin
-						hdr <= 1'b1;
-						ps  <= P_DATA;
+						hdr  <= !p.exhausted;
+						p.ps <= p.exhausted ? P_BAD : P_DATA;
 					end else if (kind == 8'hFF) begin
 						// Rejected table headers still carry 128 raw bytes.
-						cnt <= 16'd128;
-						ps  <= P_SKIP;
+						cnt  <= 16'd128;
+						p.ps <= P_SKIP;
 					end else begin
-						ps  <= P_HUNT;
+						p.ps <= p.exhausted ? P_BAD : P_HUNT;
 					end
 				end
 				P_SKIP: begin
 					cnt <= cnt - 16'd1;
 					if (cnt == 16'd1)
-						ps <= P_HUNT;
+						p.ps <= p.exhausted || last_charge ? P_BAD : P_HUNT;
 				end
 				P_DATA: begin
 					cnt    <= cnt - 16'd1;
@@ -89,7 +104,7 @@ always_ff @(posedge clk) begin
 					push   <= !stuff;
 					push_d <= rx_d;
 					if (cnt == 16'd1)
-						ps <= P_DONE;
+						p.ps <= P_DONE;
 				end
 				default: ;
 			endcase
@@ -97,6 +112,7 @@ always_ff @(posedge clk) begin
 	end
 end
 
-assign ss_so = SAVESTATE ? ps[2] : ss_si;
+assign ps = p.ps;
+assign ss_so = SAVESTATE ? p[PARSER_BITS-1] : ss_si;
 
 endmodule

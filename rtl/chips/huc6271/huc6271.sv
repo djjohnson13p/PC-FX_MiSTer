@@ -10,7 +10,7 @@
 // over; a complete strip swaps the R-RAMs and shows from the next line for
 // 16 lines, an incomplete one leaves the picture transparent.
 //
-// Board: A3:A0 = CPU A4:A1, D7:0, write only. -HSYNC is the 6261's -HSYNCB
+// Board: A3:A0 = CPU A4:A1, D7:0, write only. -HSYNC is the 6261's -HSYNCC
 // and DCKKR its KING/Rainbow dot clock; ce_osc is OSC (clk_sys).
 //
 // Savestate: SS_BITS of chain plus R-RAM A, B and the Q tables through
@@ -39,6 +39,7 @@ module huc6271 #(
 
 	input  logic  [7:0] kr_d,
 	input  logic        kr_wr_n,
+	input  logic        stream_start, // internal transfer boundary
 	output logic        reqr_n,
 	output logic        invalid,      // to KING: the 16 lines an incomplete strip leaves transparent
 
@@ -109,7 +110,7 @@ huc6271_kr_rx kr_rx (
 	.clk, .reset, .ce,
 	.flush (init),
 	.kr_d, .kr_wr_n, .rx_v, .rx_d,
-	.want (r.run && ps != P_DONE && (ps == P_DATA || st.kx[0])),
+	.want (r.run && ps != P_DONE && ps != P_BAD && (ps == P_DATA || st.kx[0])),
 	.reqr_n,
 	.push, .push_d, .empty, .pop,
 	.q (fq)
@@ -117,7 +118,7 @@ huc6271_kr_rx kr_rx (
 
 huc6271_parser #(.SAVESTATE(SAVESTATE)) parser (
 	.clk, .reset, .ce, .init,
-	.run (r.run),
+	.run (r.run), .stream_start,
 	.rx_v, .rx_d,
 	.hdr, .kind, .push, .push_d, .ps,
 	.ss_shift,
@@ -333,7 +334,7 @@ huc6271_out out (
 );
 
 assign ss_mem_rdata = ss_mem_addr[14] ? ss_q_rdata : ss_r_rdata;
-assign ss_busy      = (ps != P_HUNT && ps != P_DONE) || !empty || vlc_busy || !pipe_idle;
+assign ss_busy      = (ps != P_HUNT && ps != P_DONE && ps != P_BAD) || !empty || vlc_busy || !pipe_idle;
 
 assign invalid      = st.inv;
 

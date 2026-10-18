@@ -102,14 +102,14 @@ module savestate_ui
 					info_wait_q <= {INFO_TIMEOUT_BITS{1'b0}};
 				end
 
-				if (joySS && joyRight && !last_right_q &&
+				if (joyRight && !last_right_q &&
 					(selected_slot_q < 2'd3)) begin
 					selected_slot_q <= selected_slot_q + 2'd1;
 					statusUpdate <= 1'b1;
 					slot_switched_q <= 1'b1;
 					info_wait_q <= {INFO_TIMEOUT_BITS{1'b0}};
 				end
-				if (joySS && joyLeft && !last_left_q &&
+				if (joyLeft && !last_left_q &&
 					(selected_slot_q != 2'd0)) begin
 					selected_slot_q <= selected_slot_q - 2'd1;
 					statusUpdate <= 1'b1;

@@ -482,6 +482,7 @@ logic        ce_dck70, hsynca_n, vsync_n;
 logic  [7:0] vda, vdb;
 logic        spbg_a, spbg_b;
 logic        ss_nt, ss_va, ss_vb;
+logic        va_rcr_idle, vb_rcr_idle;
 logic [15:0] ss_nt_rdata, ss_va_rdata, ss_vb_rdata;
 
 /* verilator lint_off UNUSEDSIGNAL */
@@ -564,6 +565,7 @@ pcfx_vdc_slot #(
 	.ss_shift     (ss_shift),
 	.ss_si        (ss_nt),
 	.ss_so        (ss_va),
+	.ss_rcr_idle  (va_rcr_idle),
 	.ss_mem_sel   (ss_mem_sel && ss_mem_chip == 3'd1),
 	.ss_mem_addr  (ss_mem_addr),
 	.ss_mem_we    (ss_mem_we),
@@ -594,6 +596,7 @@ pcfx_vdc_slot #(
 	.ss_shift     (ss_shift),
 	.ss_si        (ss_va),
 	.ss_so        (ss_vb),
+	.ss_rcr_idle  (vb_rcr_idle),
 	.ss_mem_sel   (ss_mem_sel && ss_mem_chip == 3'd2),
 	.ss_mem_addr  (ss_mem_addr),
 	.ss_mem_we    (ss_mem_we),
@@ -606,7 +609,7 @@ pcfx_vdc_slot #(
 // K-R bus, KING to HuC6230 and Rainbow.
 logic  [7:0] kr_d;
 logic        kr_cs0_n, kr_cs1_n, kr_rh_l, kr_wr_n;
-logic        ss_sb, ss_ra, kr_rb_wr_n, reqr_n;
+logic        ss_sb, ss_ra, kr_rb_wr_n, reqr_n, rb_stream_start;
 
 // CN401 to the CD board: every line low-true open drain with a pull-up,
 // so each net is the AND of what both ends pull down.
@@ -703,6 +706,7 @@ huc6272 #(
 	.kr_rh_l       (kr_rh_l),
 	.kr_wr_n       (kr_wr_n),
 	.kr_rb_wr_n    (kr_rb_wr_n),
+	.rb_stream_start (rb_stream_start),
 	.reqr_n        (reqr_n),
 	.ss_shift      (ss_shift),
 	.ss_si         (ss_sb),
@@ -734,9 +738,10 @@ huc6271 #(
 	.a            (ioa[4:1]),
 	.d_i          (iod[7:0]),
 	.ce_dck       (ce_dot),
-	.hsync_n      (hsyncb_n),
+	.hsync_n      (hsyncc_n),
 	.kr_d         (kr_d),
 	.kr_wr_n      (kr_rb_wr_n),
+	.stream_start (rb_stream_start),
 	.reqr_n       (reqr_n),
 	.invalid      (ra_invalid),
 	.rma_cs_n     (rma_cs_n),
@@ -767,7 +772,7 @@ huc6271 #(
 	.dbg_dl       (ra_dbg_dl)
 );
 
-assign ss_busy = ga_ss_busy || king_ss_busy || ra_ss_busy || (cd_blk_busy && !cd_blk_fault);
+assign ss_busy = ga_ss_busy || king_ss_busy || ra_ss_busy || !va_rcr_idle || !vb_rcr_idle || (cd_blk_busy && !cd_blk_fault);
 
 sram_2264 u_rram_a (
 	.clk  (clk),
@@ -872,7 +877,7 @@ huc6230 #(
 	.wr_n         (iowr_n),
 	.a            (ioa[5:1]),
 	.d_i          (iod[7:0]),
-	.hsync_n      (hsyncc_n),
+	.hsync_n      (hsyncb_n),
 	.kr_d         (kr_d),
 	.kr_cs0_n     (kr_cs0_n),
 	.kr_cs1_n     (kr_cs1_n),

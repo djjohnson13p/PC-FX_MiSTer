@@ -217,7 +217,7 @@ module pcfx_memory #(
 
 	// ---------------------------------------------------------------- pins
 
-	logic  [3:0] cmd;
+	logic  [3:0] cmd, pin_cmd;
 	logic  [1:0] cba;
 	logic [12:0] ca;
 	logic [15:0] cdq;
@@ -243,7 +243,7 @@ module pcfx_memory #(
 `endif
 		.reset(rst_pins),
 		.init_done(init_done),
-		.cmd(cmd),
+		.cmd(pin_cmd),
 		.ba(cba),
 		.a(ca),
 		.dq_out(cdq),
@@ -361,6 +361,8 @@ module pcfx_memory #(
 	logic        nx_oe;
 	logic  [2:0] nx_tag;
 	logic        p2_rd_ok;              // the next edge is p2 with no write posted
+	// Keep the pin CAS decode off the shared command net.
+	(* preserve, dont_merge *) logic p2_pin_ok;
 	logic        grid_ok;               // phase grid synced since the last resume
 
 	// CPU side.
@@ -911,10 +913,14 @@ module pcfx_memory #(
 	// nCAS depends on the read itself; the column bits take the sample
 	// whenever it could be one (a NOP ignores them).
 	assign cmd = {nx_cmd[3:2], nx_cmd[1] && !p2_rd, nx_cmd[0]};
+	assign pin_cmd = {nx_cmd[3:2], nx_cmd[1] && !(p2_pin_ok && s_rd), nx_cmd[0]};
 `ifndef SYNTHESIS
-	always @(posedge clk_sdram)
+	always @(posedge clk_sdram) begin
 		if (p2_rd_ok && (nx_cmd != C_NOP || nx_a != 13'd0 || nx_ba != 2'd2))
 			$error("pcfx_memory: p2 READ over a busy slot");
+		if (!rst && (p2_pin_ok != p2_rd_ok || pin_cmd != cmd))
+			$error("pcfx_memory: pin command differs from scheduler command");
+	end
 `endif
 	assign pg_q = {mr_open, mr_row};
 
@@ -980,6 +986,7 @@ module pcfx_memory #(
 			nx_oe    <= 1'b0;
 			nx_tag   <= T_NONE;
 			p2_rd_ok <= 1'b0;
+			p2_pin_ok <= 1'b0;
 			grid_ok  <= 1'b0;
 			wp_v     <= 1'b0;
 			wp_lo    <= 1'b0;
@@ -1081,6 +1088,7 @@ module pcfx_memory #(
 			nx_tag <= d_tag;
 			// wp_lo only changes on p2, so its value here holds through it.
 			p2_rd_ok <= use_c2 && at_p1 && p_cas_h && !wp_lo;
+			p2_pin_ok <= use_c2 && at_p1 && p_cas_h && !wp_lo;
 			if (at_p1) grid_ok <= 1'b1;
 			else if (!sched) grid_ok <= 1'b0;
 

@@ -88,7 +88,6 @@ module king_scsi #(
 import huc6272_pkg::*;
 
 localparam logic [6:0] ACK_DLY  = 7'd2;
-localparam logic [6:0] ACK_HOLD = 7'd81;
 localparam logic [9:0] SB_FIRST = 10'd527;
 localparam logic [9:0] SB_END   = 10'd1007;  // last pulse falls
 
@@ -153,17 +152,14 @@ always_ff @(posedge clk) begin
 					st.ht <= st.ht - 7'd1;
 				end
 			2'd2:
-				if (!req_b) begin
+				if (!req_b)
 					st.hs <= 2'd3;
-					st.ht <= ACK_HOLD - 7'd1;
-				end
 			default:
-				if (st.hdma ? st.ht == 7'd0 : pdma_rel) begin
+				// DMA has accepted the byte; pseudo-DMA waits for the CPU.
+				if (st.hdma || pdma_rel) begin
 					st.ack <= 1'b0;
 					st.hs  <= 2'd0;
 					if (st.tx) st.drq <= 1'b1;
-				end else begin
-					st.ht <= st.ht - 7'd1;
 				end
 		endcase
 

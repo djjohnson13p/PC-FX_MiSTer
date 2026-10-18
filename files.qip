@@ -38,6 +38,7 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/chips/huc6261/huc6261_hd_path
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/chips/huc6261/huc6261_yuv_out.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/chips/huc6261/huc6261.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/yuv2rgb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/rgb_saturation.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/pcfx_video.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memchips/mrom_msm538022c.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memchips/sram_upd43256.sv

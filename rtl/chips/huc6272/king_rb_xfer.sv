@@ -1,8 +1,8 @@
 // KING compressed-picture transfer to the HuC6271 (Rainbow), registers
 // 40-44, and the raster monitor (reg 44, RINT in reg 40) for king_irq.
 //
-// A reg 42 raster match is held until the current transfer ends. The next
-// transfer loads reg 41 (bank A/B, A16:0) and reg 43 blocks of 16 lines.
+// An idle transfer starts at the reg 42 raster, loading reg 41
+// (bank A/B, A16:0) and reg 43 blocks of 16 lines.
 // The address steps inside the bank. Clearing REN stops it at once.
 //
 // While -REQR is low KING reads ahead up to three words into a buffer and
@@ -41,6 +41,7 @@ module king_rb_xfer #(
 	input  logic        kr_busy,
 	output logic  [7:0] kr_d,
 	output logic        kr_rb_wr_n,
+	output logic        stream_start,  // internal source-reload event
 
 	output logic        rint,
 	output logic  [8:0] mon,
@@ -68,7 +69,7 @@ wire cancel_start = wr_reg && !acc.hi
 	&& (acc.r == 7'h42 || (acc.r == 7'h40 && !acc.d[0])
 	 || (acc.r == 7'h43 && acc.d[4:0] == 5'd0));
 wire go = (!st.act || ends) && st.ctl[0] && st.blocks != 5'd0
-	&& (start_hit || st.start_pending) && !cancel_start;
+	&& start_hit && !cancel_start;
 
 wire send = st.act && !reqr_n && st.n != 2'd0 && !kr_busy;
 
@@ -108,31 +109,33 @@ always_ff @(posedge clk) begin
 			st.lcnt <= 4'd0;
 			st.ab   <= st.sa[17];
 			st.a    <= st.sa[16:0];
+			// Discard words fetched from the previous source.
+			st.n    <= 2'd0;
+			st.fly  <= 1'b0;
+			st.bv   <= 1'b0;
 		end
 
-		// Keep an early match until the current transfer finishes.
-		if (go || cancel_start)
-			st.start_pending <= 1'b0;
-		else if (start_hit && st.ctl[0] && st.blocks != 5'd0)
-			st.start_pending <= 1'b1;
+		st.ss_pad <= 1'b0;
 
-		if (dck) begin
-			st.fly <= take;
-			if (take) begin
-				st.fly_ab <= st.ab;
-				st.a      <= st.a + 17'd1;
+		if (!go) begin
+			if (dck) begin
+				st.fly <= take;
+				if (take) begin
+					st.fly_ab <= st.ab;
+					st.a      <= st.a + 17'd1;
+				end
+				st.bv <= send;
+				if (send) begin
+					st.cur <= st.w[0];
+					st.w   <= {16'd0, st.w[2:1]};
+					st.n   <= st.n - 2'd1;
+				end
 			end
-			st.bv <= send;
-			if (send) begin
-				st.cur <= st.w[0];
-				st.w   <= {16'd0, st.w[2:1]};
-				st.n   <= st.n - 2'd1;
-			end
-		end
 
-		if (cap) begin
-			st.w[st.n] <= cap_ab ? kb_q : ka_q;
-			st.n       <= st.n + 2'd1;
+			if (cap) begin
+				st.w[st.n] <= cap_ab ? kb_q : ka_q;
+				st.n       <= st.n + 2'd1;
+			end
 		end
 
 		// Last, so clearing REN beats a start in the same clk.
@@ -151,11 +154,12 @@ always_ff @(posedge clk) begin
 	if (reset) begin
 		cap <= 1'b0;
 	end else if (ce_osc) begin
-		cap    <= ce_dck && st.fly;
+		cap    <= !go && ce_dck && st.fly;
 		cap_ab <= st.fly_ab;
 	end
 end
 
+assign stream_start = ce_osc && !reset && !(SAVESTATE && ss_shift) && go;
 assign kr_d       = ph < 4'd4 ? st.cur[7:0] : st.cur[15:8];
 assign kr_rb_wr_n = !(st.bv && (ph == 4'd0 || ph == 4'd1 || ph == 4'd4 || ph == 4'd5));
 assign rint       = st.ctl[1];

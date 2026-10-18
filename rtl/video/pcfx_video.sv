@@ -27,8 +27,10 @@ module pcfx_video
 	input  logic        interlace,
 
 	input  logic        jfif,           // YUV matrix
+	input  logic  [1:0] saturation,     // 100 %, 75 %, 50 %, 25 %
 	input  logic  [2:0] fx,             // none, HQ2x, CRT 25 %, 50 %, 75 %
 	input  logic        forced_scandoubler,
+	input  logic  [1:0] overscan,       // 4, 8, 0 lines per edge
 	input  logic        vcrop,          // 216 lines on 1080p
 	input  logic  [3:0] vcrop_off,      // 0, 2 ... 12, -12 ... -2 lines
 	input  logic  [1:0] scale,          // normal, V, narrower HV, wider HV integer
@@ -89,11 +91,33 @@ yuv2rgb yuv2rgb
 	.b        (b)
 );
 
+wire [7:0] r_sat, g_sat, b_sat;
+rgb_saturation saturation_profile
+(
+	.mode  (saturation),
+	.r_in  (r),
+	.g_in  (g),
+	.b_in  (b),
+	.r_out (r_sat),
+	.g_out (g_sat),
+	.b_out (b_sat)
+);
+
+// Register color and pixel timing before the faster gamma clock.
+logic [7:0] r_sat_q, g_sat_q, b_sat_q;
+logic ce_sat_q, hs_sat_q, vs_sat_q, hb_sat_q, vb_sat_q;
+always_ff @(posedge clk_sys) begin
+	r_sat_q <= r_sat;
+	g_sat_q <= g_sat;
+	b_sat_q <= b_sat;
+	{ce_sat_q, hs_sat_q, vs_sat_q, hb_sat_q, vb_sat_q} <= {ce_rgb, hs_rgb, vs_rgb, hb_rgb, vb_rgb};
+end
+
 // One CLK_VIDEO pulse per pixel; the pixel holds for two clocks after it.
 logic ce_old, ce_vid;
 always_ff @(posedge CLK_VIDEO) begin
-	ce_old <= ce_rgb;
-	ce_vid <= ce_rgb && !ce_old;
+	ce_old <= ce_sat_q;
+	ce_vid <= ce_sat_q && !ce_old;
 end
 
 wire sd   = !interlace && (fx != 3'd0 || forced_scandoubler);
@@ -118,13 +142,13 @@ video_mixer #(.LINE_LENGTH(1024), .GAMMA(1)) video_mixer
 	.scandoubler (sd),
 	.hq2x        (hq2x),
 	.gamma_bus   (gamma_bus),
-	.R           (r),
-	.G           (g),
-	.B           (b),
-	.HSync       (hs_rgb),
-	.VSync       (vs_rgb),
-	.HBlank      (hb_rgb),
-	.VBlank      (vb_rgb),
+	.R           (r_sat_q),
+	.G           (g_sat_q),
+	.B           (b_sat_q),
+	.HSync       (hs_sat_q),
+	.VSync       (vs_sat_q),
+	.HBlank      (hb_sat_q),
+	.VBlank      (vb_sat_q),
 	.HDMI_FREEZE (HDMI_FREEZE),
 	.freeze_sync (unused_freeze_sync),
 	.VGA_R       (VGA_R),
@@ -134,6 +158,10 @@ video_mixer #(.LINE_LENGTH(1024), .GAMMA(1)) video_mixer
 	.VGA_HS      (VGA_HS),
 	.VGA_DE      (de_mix)
 );
+
+// The 240-line picture loses 4 or 8 lines per edge; the scandoubler repeats each line.
+wire [11:0] overscan_size = overscan == 2'd0 ? 12'd232 : overscan == 2'd1 ? 12'd224 : 12'd0;
+wire [11:0] crop_size = en216p && vcrop ? 12'd216 : sd ? {overscan_size[10:0], 1'b0} : overscan_size;
 
 // Crop offset in lines: 0, 2 ... 12, then -12 ... -2
 wire [4:0] voff = vcrop_off < 4'd7 ? {vcrop_off, 1'b0} : {vcrop_off, 1'b0} - 5'd26;
@@ -151,8 +179,8 @@ video_freak video_freak
 	.VGA_DE_IN   (de_mix),
 	.ARX         (ar == 2'd0 ? 12'd128 : {10'd0, ar - 2'd1}),
 	.ARY         (ar == 2'd0 ? 12'd105 : 12'd0),
-	.CROP_SIZE   (en216p && vcrop ? 12'd216 : 12'd0),
-	.CROP_OFF    (voff),
+	.CROP_SIZE   (crop_size),
+	.CROP_OFF    (en216p && vcrop ? voff : 5'd0),
 	.SCALE       ({1'b0, scale})
 );
 

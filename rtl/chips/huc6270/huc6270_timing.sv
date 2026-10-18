@@ -69,10 +69,13 @@ module huc6270_timing
 
 	input  logic        ss_shift,
 	input  logic        ss_si,
-	output logic        ss_so
+	output logic        ss_so,
+	output logic        ss_rcr_idle
 );
 
 timing_state_t st;
+// Capture waits for the raster event pipe to drain.
+logic [9:0] rcr_pipe;
 
 wire vs_f = !vsyn_n && st.vs_q;
 assign hs_f = !hsyn_n && st.hs_q;
@@ -94,6 +97,9 @@ wire at_hdsm3_d6 = st.tile == hds_end - 7'd3 && st.dot == 3'd6;
 wire at_hdisp_d1 = st.tile == hdisp_pos && st.dot == 3'd1;
 wire at_hde_d7   = st.tile == hde_end && d7;
 wire disp_break  = st.line_inc && hs_f;
+wire rcr_match   = at_hdisp_d1 && st.rc_cnt == regs.rcr && regs.cr_ie[2];
+
+assign ss_rcr_idle = rcr_pipe == 10'd0 && !rcr_match;
 
 assign at_hds_d3   = st.tile == hds_end && st.dot == 3'd3;
 assign at_hds_d7   = st.tile == hds_end && d7;
@@ -115,11 +121,13 @@ assign vbl_start = at_hdsm2_d7 && !st.vdisp && st.vdisp_old;
 always_ff @(posedge clk) begin
 	if (reset) begin
 		st <= '0;
+		rcr_pipe <= '0;
 		st.hdw    <= 7'd31;
 		st.burst  <= 1'b1;
 		st.rc_cnt <= 10'd64;
 	end else if (SAVESTATE && ss_shift) begin
 		st <= timing_state_t'({st[TIMING_BITS-2:0], ss_si});
+		rcr_pipe <= '0;
 	end else begin
 		if (sr_rd) begin
 			st.irq_vbl <= 1'b0;
@@ -127,6 +135,7 @@ always_ff @(posedge clk) begin
 		end
 
 		if (ce_dck) begin
+			rcr_pipe <= {rcr_pipe[8:0], rcr_match};
 			st.hs_q <= hsyn_n;
 			st.vs_q <= vsyn_n;
 
@@ -225,7 +234,7 @@ always_ff @(posedge clk) begin
 					st.irq_vbl <= 1'b1;
 			end
 
-			if (at_hdisp_d1 && st.rc_cnt == regs.rcr && regs.cr_ie[2])
+			if (rcr_pipe[9])
 				st.irq_rcr <= 1'b1;
 		end
 	end

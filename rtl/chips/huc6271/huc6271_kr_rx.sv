@@ -1,6 +1,6 @@
 // HuC6271 K-R bus input: a byte is taken from KR7:0 on the rising edge of
 // KING's strobe (the last value seen while it was low). Strip data bytes
-// from the parser wait in a 64-byte FIFO for the decoder. -REQR asks for
+// from the parser wait in a 128-byte FIFO for the decoder. -REQR asks for
 // more while the chip runs, the parser still wants the strip and the FIFO
 // has room for what KING may already have on its way.
 

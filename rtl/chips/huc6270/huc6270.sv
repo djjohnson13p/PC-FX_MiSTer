@@ -61,6 +61,7 @@ module huc6270
 	input  logic        ss_shift,
 	input  logic        ss_si,
 	output logic        ss_so,
+	output logic        ss_rcr_idle,
 	input  logic        ss_mem_sel,
 	input  logic [16:0] ss_mem_addr,
 	input  logic        ss_mem_we,
@@ -217,7 +218,8 @@ huc6270_timing #(.SAVESTATE(SAVESTATE)) u_timing (
 	.line         (line),
 	.ss_shift     (ss_shift),
 	.ss_si        (ss_c1),
-	.ss_so        (ss_c2)
+	.ss_so        (ss_c2),
+	.ss_rcr_idle  (ss_rcr_idle)
 );
 
 huc6270_bg u_bg (

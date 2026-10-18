@@ -97,6 +97,7 @@ module huc6272 #(
 	output logic        kr_rh_l,
 	output logic        kr_wr_n,
 	output logic        kr_rb_wr_n,
+	output logic        rb_stream_start,
 	input  logic        reqr_n,
 
 	input  logic        ss_shift,
@@ -284,6 +285,7 @@ king_rb_xfer #(.SAVESTATE(SAVESTATE)) rb (
 	.kr_busy (adpcm_kr_busy),
 	.kr_d (kr_d_rb),
 	.kr_rb_wr_n,
+	.stream_start (rb_stream_start),
 	.rint, .mon,
 	.ss_shift,
 	.ss_si (ss_7),

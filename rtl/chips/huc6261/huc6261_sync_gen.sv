@@ -108,7 +108,8 @@ assign ce_dck70 = st.frm.dc7 ? ce_master && st.p3 == 2'd2 : ce_dckkr;
 wire [10:0] hs_start = st.frm.dc7 ? H_HS7 : H_HS;
 assign hsynca_n = !(st.hc >= hs_start && st.hc < H_HS_END);
 assign hsyncb_n = !(st.hc >= H_HS && st.hc < H_HS_END);
-assign hsyncc_n = hsyncb_n;
+// The decoder holds its line count through the extra non-interlace line.
+assign hsyncc_n = hsyncb_n || (!interlace && st.vc == 9'd262);
 assign vsync_n  = st.vs_n;
 
 assign copy = st.hc >= H_COPY && st.hc <= H_COPY_END;
