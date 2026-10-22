@@ -1,0 +1,1 @@
+source [file join $::quartus(qip_path) pll_q17.qip]
