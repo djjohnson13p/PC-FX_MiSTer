@@ -1,0 +1,42 @@
+{
+  "software_reference_commit": "786fc9dcbaa6cdb8bfbe421f3f43c2f202c4bbac",
+  "manufacturer_oracle": false,
+  "references": [
+    {
+      "filename": "rainbow.cpp",
+      "url": "https://raw.githubusercontent.com/PaulDanielGaming/QueenofQueens/786fc9dcbaa6cdb8bfbe421f3f43c2f202c4bbac/mednafen/src/pcfx/rainbow.cpp",
+      "bytes": 35171,
+      "sha256": "eb1e996422adc75db75f20843b19e1556d2987758301fc99b33c7eb0b7d6a076",
+      "role": "independent software reference, not manufacturer or silicon oracle"
+    },
+    {
+      "filename": "rainbow_dcy.inc",
+      "url": "https://raw.githubusercontent.com/PaulDanielGaming/QueenofQueens/786fc9dcbaa6cdb8bfbe421f3f43c2f202c4bbac/mednafen/src/pcfx/rainbow_dcy.inc",
+      "bytes": 13824,
+      "sha256": "71545fdc07cc81b606dd47d072efc805b11360448bb7d5513c280659ea42268c",
+      "role": "independent software reference, not manufacturer or silicon oracle"
+    },
+    {
+      "filename": "rainbow_dcuv.inc",
+      "url": "https://raw.githubusercontent.com/PaulDanielGaming/QueenofQueens/786fc9dcbaa6cdb8bfbe421f3f43c2f202c4bbac/mednafen/src/pcfx/rainbow_dcuv.inc",
+      "bytes": 6656,
+      "sha256": "7d90c0685b02ade512aeb4f4330017d77e14b0344e1a3d80e5e58ee4e115eb89",
+      "role": "independent software reference, not manufacturer or silicon oracle"
+    },
+    {
+      "filename": "rainbow_acy.inc",
+      "url": "https://raw.githubusercontent.com/PaulDanielGaming/QueenofQueens/786fc9dcbaa6cdb8bfbe421f3f43c2f202c4bbac/mednafen/src/pcfx/rainbow_acy.inc",
+      "bytes": 110592,
+      "sha256": "c0da5a1886021b488daf8e30898d9ee74821ce21377d63e8bed52eda1961fa0a",
+      "role": "independent software reference, not manufacturer or silicon oracle"
+    },
+    {
+      "filename": "rainbow_acuv.inc",
+      "url": "https://raw.githubusercontent.com/PaulDanielGaming/QueenofQueens/786fc9dcbaa6cdb8bfbe421f3f43c2f202c4bbac/mednafen/src/pcfx/rainbow_acuv.inc",
+      "bytes": 110592,
+      "sha256": "b8164b108f2fe248219e2c71d1b23343f8619e0b222deac9ae5f8cba689825ca",
+      "role": "independent software reference, not manufacturer or silicon oracle"
+    }
+  ],
+  "expected_events": "literal hand-derived fixtures; no DUT functions, downloaded tables or decoder execution during tests"
+}

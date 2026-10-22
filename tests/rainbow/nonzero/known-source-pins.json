@@ -1,0 +1,19 @@
+{
+  "baseline_commit": "b9480625951afd96988533d252847bdb74bc30bd",
+  "baseline_lf_sha256": {
+    "rtl/chips/huc6271/huc6271_pkg.sv": "fe1b4c205c580bb849531e12c308522d46266a3c242e5e8e1fb036998a4d599f",
+    "rtl/mem/cache_ram.v": "991ea68fff8998637a1ae25bb1efca6b0d83c43b2ea2da4348ed2beb20732abc",
+    "rtl/chips/huc6271/huc6271_kr_rx.sv": "df89aa9b035f8a0693d1dff5988283633b82758db7bdb6688b5fb8b813fde716",
+    "rtl/chips/huc6271/huc6271_vlc.sv": "bcb7fc1121d982eedd1ea91d5f9209772fa15836fa61430d40b1844fdda72011"
+  },
+  "candidate_commit": "26bddb7c6f6cee3bdff7d7a2a11208b431e1866b",
+  "candidate_lf_sha256": {
+    "rtl/chips/huc6271/huc6271_pkg.sv": "fe1b4c205c580bb849531e12c308522d46266a3c242e5e8e1fb036998a4d599f",
+    "rtl/mem/cache_ram.v": "991ea68fff8998637a1ae25bb1efca6b0d83c43b2ea2da4348ed2beb20732abc",
+    "rtl/chips/huc6271/huc6271_kr_rx.sv": "615b9c752b62ef6600e7425bca8ab89ac40b1e1e33518510b16dc18b8f9d2f28",
+    "rtl/chips/huc6271/huc6271_vlc.sv": "bcb7fc1121d982eedd1ea91d5f9209772fa15836fa61430d40b1844fdda72011"
+  },
+  "original_fixed_vector_sha256": "c373ee19e44f08d2b055eb0d4e9cc335bcdfe22573ed4d4fd5063f1b33914f63",
+  "original_tested_bench_sha256": "851356e956c0584187738dd123973b5c69c18d628b6381d07fdf5e0939f047ff",
+  "portable_bench_change": "Only a GPL-2.0-only SPDX comment was prepended; executable test logic is identical to the tested bench"
+}

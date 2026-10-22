@@ -157,3 +157,13 @@ commit, all interleavings, synthesis-primitive equivalence or power-loss safety.
 Vendor simulation adds evidence about configured RAM semantics; it is not a
 substitute for actual synthesis and on-device testing. No gameplay improvement
 is claimed from these bounded interface results alone.
+
+## Additional nonzero controls
+
+The separate [nonzero suite](nonzero/README.md) adds three literal controls for
+signed DC prediction, Y/UV AC runs and long-token alignment. The original
+private execution passed all three against both upstream and candidate FIFOs,
+with 714 checked coefficient events and identical completion timing. Its
+portable packaging has only been syntax/dry-run checked. Expected values come
+from a separate software reference, with the limits documented in that suite;
+this is not a hardware or Queen of Queens acceptance result.

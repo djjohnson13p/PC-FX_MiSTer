@@ -24,6 +24,13 @@ The FIFO change is a module clock-enable robustness fix. Current normal runtime
 keeps this clock enable high, and savestate pause waits for RAINBOW to become
 idle. It has not been shown to fix the Queen of Queens corruption report.
 
+Three additional [nonzero-coefficient controls](tests/rainbow/nonzero/README.md)
+passed against both upstream and candidate FIFOs with identical timing and all
+714 coefficient events matching their fixed expectations. They exercise signed
+DC prediction, Y/UV AC runs and long-token alignment using software-reference
+expectations. They do not establish chip accuracy; the portable runner's
+packaging has only been syntax/dry-run checked.
+
 ## Build configuration
 
 The default project uses the analog-I/O pin map. For a dual-SDRAM board, use a

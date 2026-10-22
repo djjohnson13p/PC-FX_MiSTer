@@ -1,0 +1,19 @@
+{
+  "schema": "pcfx-nonzero-handoff-file-pins-v1",
+  "files": {
+    "known-source-pins.json": "e9bdb75449f6a6c98e9104fc6c040251fbe035bf6b972a19f56c90d7de14ba99",
+    "LICENSE": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643",
+    "nz_ac_overrun_alignment.expected.hex": "48f78f80f3e328fd070499a6e7bbaeb8d957a132f3fb60b0d0ed4d4f953bd5b0",
+    "nz_ac_overrun_alignment.payload.hex": "5f85d26f29ce9911888a2cc90144787757bbfdc6fc448d543d72250b328d6cab",
+    "nz_ac_yuv_runs.expected.hex": "51abc2d31f66a070b9beedce4486338e32059173df2250961419b3319d70e185",
+    "nz_ac_yuv_runs.payload.hex": "0f694edf90ed97d09040649183ed8003695efdf24b428c42bbbbdacaaa6ca5e8",
+    "nz_dc_predictors.expected.hex": "8cd76a9986b28b42478a8a5fa4b6561f9132c334b3e659d7bee8f4e4775b3855",
+    "nz_dc_predictors.payload.hex": "caffeed7a9f6879855285119854697a264ffe9439ef8687a712a989794b74785",
+    "provenance.json": "0e1e572853fe51f5c61202eeec26647cd362384bab757fd656041694568c5aac",
+    "README.md": "51b230fea7b787569d0350c73d30fbde04c487cb5b021e5125d0e00dc69f7e94",
+    "run_nonzero.py": "8c27608c9704400623ed354b61d5ef547bfb9b767420df59c0eac36d9ec0001e",
+    "tb_rainbow_nonzero.sv": "46274b5340fa7ec1171d49be71f5b6aece5593de14850cc40a69fc0e703ea42c",
+    "vectors.json": "6fdcc34478a0e4e73d5643cd87284078060e6161ab5ad150ded5c72266919dfe",
+    ".gitattributes": "afe8b4bc9bb287ebdfa32bb10098423d4cdacf82fd2091cf2bb9c4e58daee8a7"
+  }
+}

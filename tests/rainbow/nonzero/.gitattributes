@@ -1,0 +1,2 @@
+# Keep the literal fixture and source hashes reproducible on Windows too.
+* text eol=lf
