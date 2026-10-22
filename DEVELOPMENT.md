@@ -55,8 +55,33 @@ set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS ON
 Quartus Lite25.1std Build1129 recognized the device and synthesized the initial
 PLL-include baseline. The corrected dual-board/FIFO candidate hit an internal
 optimizer assertion in `opt_op_add.cpp:2110` before fitting. It is not a completed
-Quartus25 build. The same candidate is being compiled with Quartus Lite19.1
-Build670 as a controlled fallback; fit and timing acceptance remain pending.
+Quartus25 build. The same candidate completed synthesis, fitting, assembly and
+standard timing analysis with Quartus Lite19.1 Build670 as a controlled fallback.
+The resulting bitstream is held from hardware testing for the capture-window
+check below; ordinary timing success is not sufficient for this controller.
+
+### SDRAM capture-window acceptance
+
+The inherited `rtl/mem/sdram.sdc` deliberately leaves pin-to-DDIO read capture
+to runtime phase calibration. It constrains the following DDIO-to-register paths
+with a 7.800 ns maximum and a relaxed -15.000 ns minimum, and additionally
+requires every fast-corner setup slack to be at most 4.600 ns. This upper-slack
+limit protects the available calibration window; a larger positive slack is
+not automatically better here.
+
+The first Quartus19 fit passes ordinary constrained timing in all eight models,
+but fails this separate upper-slack gate on 249 of 256 fast-corner path/model
+observations (maximum 5.937 ns). The review covers all 64 direct source/target
+pairs and 32 calibrated destinations per corner. All 64 intended register and
+mux LAB placements were honored. These results establish a source-contract
+failure in this fit, not an observed malfunction on a running MiSTer.
+
+A private routing experiment is being prepared. It must preserve the original
+7.800/-15.000 constraints and 4.600 acceptance limit, constrain actual physical
+nets, and pass a fresh full fit and all-corner review before device testing.
+The source comment's nominal 3.200 ns hop is not a raw net-delay budget: the
+reported slack also includes clock skew, uncertainty and cell delays. No guest
+clock or memory-cycle slowdown is justified by this finding.
 
 ## Host software requirement
 
@@ -73,11 +98,16 @@ development Main with the last published binary; check versions after updates.
 
 ## Acceptance still required
 
-Before presenting any fix upstream, complete FPGA fit/timing review, isolated
+Before presenting any fix upstream, complete FPGA fit/timing review (including
+the special capture-window gate and runtime calibration), isolated
 on-device boot/CD/input checks, relevant game regression checks and repeated
 save/restore tests. Characterize the reported Queen of Queens and3dtank issues
 separately. Emulator agreement or a single benchmark score is not sufficient
 evidence for changing poorly documented hardware timing.
+
+The reported Queen of Queens effect may last only one or two frames. Existing
+one-shot screenshots cannot establish that it is absent; that acceptance needs
+reliable consecutive-frame capture or a live observation of the reproduction.
 
 BIOS, commercial games, compiled tools, licenses and private device settings
 must remain outside this public source repository.
