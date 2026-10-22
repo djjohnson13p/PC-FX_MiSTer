@@ -30,6 +30,8 @@ module huc6271_kr_rx
 logic               wr_q;
 logic [FIFO_AW-1:0] wp, rp;
 logic [FIFO_AW:0]   cnt;
+logic [7:0]         fifo_q, q_hold;
+logic               ce_q;
 
 always_ff @(posedge clk) begin
 	if (reset) begin
@@ -79,10 +81,24 @@ cache_ram_dp #(.ADDR_WIDTH(FIFO_AW), .DATA_WIDTH(8)) u_fifo (
 	.addr_b_i  (rp),
 	.wren_b_i  (1'b0),
 	.wdata_b_i (8'd0),
-	.q_b_o     (q)
+	.q_b_o     (fifo_q)
 );
 /* verilator lint_on PINCONNECTEMPTY */
 
+// The RAM clocks while ce is low. Keep the response to the last enabled
+// read until the decoder can consume it; continuous ce keeps its latency.
+always_ff @(posedge clk) begin
+	if (reset || flush) begin
+		ce_q   <= 1'b0;
+		q_hold <= 8'd0;
+	end else begin
+		ce_q <= ce;
+		if (ce_q)
+			q_hold <= fifo_q;
+	end
+end
+
+assign q = ce_q ? fifo_q : q_hold;
 assign empty = cnt == '0;
 
 endmodule

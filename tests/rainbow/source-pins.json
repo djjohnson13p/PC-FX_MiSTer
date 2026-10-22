@@ -1,0 +1,15 @@
+{
+  "baseline_commit": "b9480625951afd96988533d252847bdb74bc30bd",
+  "baseline_lf_sha256": {
+    "rtl/chips/huc6271/huc6271_pkg.sv": "fe1b4c205c580bb849531e12c308522d46266a3c242e5e8e1fb036998a4d599f",
+    "rtl/mem/cache_ram.v": "991ea68fff8998637a1ae25bb1efca6b0d83c43b2ea2da4348ed2beb20732abc",
+    "rtl/chips/huc6271/huc6271_kr_rx.sv": "df89aa9b035f8a0693d1dff5988283633b82758db7bdb6688b5fb8b813fde716",
+    "rtl/chips/huc6271/huc6271_vlc.sv": "bcb7fc1121d982eedd1ea91d5f9209772fa15836fa61430d40b1844fdda72011"
+  },
+  "candidate_kr_rx_lf_sha256": "615b9c752b62ef6600e7425bca8ab89ac40b1e1e33518510b16dc18b8f9d2f28",
+  "candidate_kr_rx_original_bytes_sha256": "76eee4b56935043d5e1e11c139bb1e81d6c9021971436c8aa852c7a0dd58eccb",
+  "vlc_testbench_sha256": "741838acb6be54949ce6c492730f4ba7d328f5468db656e02d2c8486a1e6641a",
+  "fifo_testbench_sha256": "f7898e7775fff8a87c8fd12d2e8e80b538cb896ac08ee45392d03b33804a8bbc",
+  "original_fifo_530run_tb_sha256": "794c5436c2c412f2fe14db84daf0b3ea9136e51b8919b1a395a1219047092440",
+  "fifo_testbench_before_comment_correction_sha256": "3a158dc249530f748002257613a2f06b1870dc1bb2d94bf93e948a3ccc703b30"
+}
