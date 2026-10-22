@@ -28,6 +28,19 @@ assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
 
+`ifdef MISTER_DUAL_SDRAM
+// This core uses the first SDRAM module. Park the unused second module,
+// and release its pins when the framework disables that connector.
+assign SDRAM2_CLK  = SDRAM2_EN ? 1'b0 : 1'bz;
+assign SDRAM2_A    = SDRAM2_EN ? 13'd0 : 13'bz;
+assign SDRAM2_BA   = SDRAM2_EN ? 2'd0 : 2'bz;
+assign SDRAM2_DQ   = 16'bz;
+assign SDRAM2_nCS  = SDRAM2_EN ? 1'b1 : 1'bz;
+assign SDRAM2_nCAS = SDRAM2_EN ? 1'b1 : 1'bz;
+assign SDRAM2_nRAS = SDRAM2_EN ? 1'b1 : 1'bz;
+assign SDRAM2_nWE  = SDRAM2_EN ? 1'b1 : 1'bz;
+`endif
+
 assign VGA_SCALER  = 0;
 assign VGA_DISABLE = 0;
 assign HDMI_BLACKOUT = 0;
