@@ -56,16 +56,24 @@ enable multicorner timing analysis. The relevant project assignments are:
 
 ```tcl
 set_global_assignment -name NUM_PARALLEL_PROCESSORS 1
-set_global_assignment -name TIMEQUEST_MULTICORNER_ANALYSIS ON
+set_global_assignment -name TIMING_ANALYZER_MULTICORNER_ANALYSIS ON
 ```
 
-Quartus Lite25.1std Build1129 recognized the device and synthesized the initial
-PLL-include baseline. The corrected dual-board/FIFO candidate hit an internal
-optimizer assertion in `opt_op_add.cpp:2110` before fitting. It is not a completed
-Quartus25 build. The same candidate completed synthesis, fitting, assembly and
-standard timing analysis with Quartus Lite19.1 Build670 as a controlled fallback.
-The resulting bitstream is held from hardware testing for the capture-window
-check below; ordinary timing success is not sufficient for this controller.
+Quartus Lite25.1std Build1129 originally hit an optimizer assertion in
+`opt_op_add.cpp:2110`. A later controlled build completed synthesis, fitting,
+assembly and standard timing analysis with these synthesis assignments:
+
+```tcl
+set_global_assignment -name SYNTH_TIMING_DRIVEN_SYNTHESIS OFF
+set_global_assignment -name SYNTH_PROTECT_SDC_CONSTRAINT ON
+```
+
+This establishes a working compiler route, not a qualified core. The October22
+experiment used the RTL at `d7a75abcbb73d18edb18be276e3593e7e7200305`, the dual-board
+pin map, and additional local capture-routing constraints described below.
+The full physical flow took39m49s. It fit the device at76% ALMs and87% RAM blocks,
+but failed the final capture timing checks. No candidate from this work has been
+loaded onto a MiSTer.
 
 ### SDRAM capture-window acceptance
 
@@ -83,12 +91,52 @@ pairs and 32 calibrated destinations per corner. All 64 intended register and
 mux LAB placements were honored. These results establish a source-contract
 failure in this fit, not an observed malfunction on a running MiSTer.
 
-A private routing experiment is being prepared. It must preserve the original
-7.800/-15.000 constraints and 4.600 acceptance limit, constrain actual physical
-nets, and pass a fresh full fit and all-corner review before device testing.
-The source comment's nominal 3.200 ns hop is not a raw net-delay budget: the
-reported slack also includes clock skew, uncertainty and cell delays. No guest
-clock or memory-cycle slowdown is justified by this finding.
+The later local experiment added64 reviewed per-pair minimum requirements and
+26 Fitter-only maximum hints. It retained the original final-analysis maximum
+and capture-window acceptance limit, clock parameters and RTL. Genuine mapped
+checks verified that the implementation-only hints did not replace the final
+timing requirements. The source comment's nominal3.200ns hop is not a raw net
+delay budget: reported slack also includes clock skew, uncertainty and cells.
+
+### October22 physical result and feasibility decision
+
+The completed Quartus25 experiment was checked across all eight available
+operating models. The native query had zero structural coverage failures and
+covered512 capture source/target/model observations. Independent comparisons
+confirmed all512 capture-hold full reports and272 ordinary-path full reports
+against their exported results.
+
+The numerical result failed:
+
+- Capture setup failed149 observations across52 distinct source/target pairs.
+  The Slow100C/-40C/85C/0C models had52/24/49/24 failing pairs respectively.
+- Worst capture setup slack was-0.708ns at Slow85C, from DDIO high bit11 to
+  `mr_q[27]`, with6.680ns data delay under the original7.800ns relationship.
+- All capture hold observations remained positive; minimum margin was0.084ns.
+- Maximum Fast capture setup slack was4.070ns, leaving0.530ns below the4.600ns
+  upper limit. These margins occur on different paths and are not a proof that
+  any specific lane is impossible to fix.
+- All eleven reviewed ordinary CPU/memory families passed setup and hold.
+  Minimum reviewed HDMI same-clock setup margin was0.032ns.
+- Fifty-six additional manual-review entries for low-half result-register copies
+  remain recorded. This failed candidate was not given complete timing acceptance.
+
+The inspected worst capture path already uses an adjacent capture register and
+a separate preserved half-select LUT; much of its delay is routing. No specific
+RTL defect or small correction with demonstrated margin was identified. A second
+physical build was therefore not justified under the bounded plan. This timing
+tuning cycle has ended; additional work needs a deeper capture-interface or
+placement investigation. This does not establish that timing closure is
+impossible on CycloneV.
+
+The experimental RBF is retained locally, unqualified for hardware use or release.
+Its SHA-256 is
+`feea0e81962b89241b451754dfb4d5a7241b3c01590d5bc6b8794cd780ba8883`.
+The original build reports, mapped/fitted databases, local constraint package and
+failed/successful receipts are preserved. A compiler-generated pin-model dump
+caused an output-classification guard failure after native compilation succeeded;
+the exact file was separately traced to the vendor Assembler and adjudicated,
+without rewriting the original failed receipt or rerunning compilation.
 
 ## Host software requirement
 
